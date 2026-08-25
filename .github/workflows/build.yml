@@ -7,6 +7,12 @@ on:
 
 permissions:
   contents: read
+  # Lets each job mint an OIDC token describing itself. Without this the
+  # exchange has nothing to present to Develocity.
+  id-token: write
+
+env:
+  DEVELOCITY_URL: https://dv-self-paced-training.grdev.net
 
 jobs:
   granted:
@@ -15,13 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/develocity-token
+        with:
+          server-url: ${{ env.DEVELOCITY_URL }}
+          audience: ${{ env.DEVELOCITY_URL }}
+
       # No wrapper and no setup-gradle/setup-java: the runner image already has
       # Gradle and JDK 21, so the job downloads no toolchain and the build's own
       # configuration is the only Develocity config in play.
       - name: Build and assert a scan was published
         working-directory: projects/granted
-        env:
-          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
         run: |
           export JAVA_HOME="$JAVA_HOME_21_X64"
           set +e
@@ -46,10 +55,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/develocity-token
+        with:
+          server-url: ${{ env.DEVELOCITY_URL }}
+          audience: ${{ env.DEVELOCITY_URL }}
+
       - name: Build and assert the publish was rejected
         working-directory: projects/forbidden
-        env:
-          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
         run: |
           export JAVA_HOME="$JAVA_HOME_21_X64"
           set +e
@@ -79,13 +91,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/develocity-token
+        with:
+          server-url: ${{ env.DEVELOCITY_URL }}
+          audience: ${{ env.DEVELOCITY_URL }}
+
       # With project-level access control enforcing and unassociated data
       # disallowed, a build that names no project is refused outright. This is the
       # third leg of the access-control story, not a control any more.
       - name: Build and assert the publish was rejected
         working-directory: projects/no-project-id
-        env:
-          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
         run: |
           export JAVA_HOME="$JAVA_HOME_21_X64"
           set +e

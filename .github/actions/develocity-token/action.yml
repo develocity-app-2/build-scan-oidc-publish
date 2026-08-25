@@ -1,0 +1,81 @@
+name: Develocity access token
+description: >
+  Exchange this job's GitHub OIDC token for a short-lived Develocity access
+  token, and expose it to later steps as DEVELOCITY_ACCESS_KEY.
+
+inputs:
+  server-url:
+    description: Develocity server to authenticate against.
+    required: true
+  audience:
+    description: >
+      Audience to mint the OIDC token for. Must equal the Audience on the
+      Develocity workload identity entry, or the token will not match it.
+    required: true
+  expires-in-hours:
+    description: Lifetime of the Develocity access token.
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        # An empty audience would mint a token that quietly fails to match any
+        # entry, so refuse rather than guess.
+        if [ -z '${{ inputs.server-url }}' ] || [ -z '${{ inputs.audience }}' ]; then
+          echo "server-url and audience must both be non-empty."
+          exit 1
+        fi
+
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "No OIDC token endpoint in this job's environment."
+          echo "The workflow needs 'id-token: write' in its permissions block."
+          exit 1
+        fi
+
+        # 1. Ask GitHub for an OIDC token describing this job. Lasts ~5 minutes,
+        #    which is why it is exchanged rather than used directly.
+        oidc=$(curl -sS --fail-with-body \
+          -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${{ inputs.audience }}" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+        echo "::add-mask::$oidc"
+
+        # Log the claims Develocity matches entries on. The token is masked, but
+        # its claims are not secret and are the first thing to check when an
+        # entry does not match.
+        python3 - "$oidc" <<'PY'
+        import base64, json, sys
+        payload = sys.argv[1].split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        for c in ("iss", "aud", "repository", "repository_owner", "ref", "workflow_ref"):
+            print(f"  {c} = {claims.get(c)!r}")
+        PY
+
+        # 2. Exchange it for a Develocity access token. No permissions or
+        #    projectIds are requested, so the token carries exactly what the
+        #    matching workload identity entry grants -- which is the thing under
+        #    test. Narrowing here would test this request instead.
+        if ! dv=$(curl -sS --fail-with-body -X POST \
+              "${{ inputs.server-url }}/api/auth/token?expiresInHours=${{ inputs.expires-in-hours }}" \
+              -H "Authorization: Bearer $oidc"); then
+          echo "Exchange failed. Develocity returned: $dv"
+          echo "A 401/403 here usually means no workload identity entry matched"
+          echo "the claims above -- check issuer, audience and claim requirements."
+          exit 1
+        fi
+        echo "::add-mask::$dv"
+
+        case "$dv" in
+          *.*.*) ;;
+          *) echo "Expected a JWT from the exchange, got something else."; exit 1 ;;
+        esac
+
+        # 3. Hand it to the build in place of a stored access key.
+        echo "DEVELOCITY_ACCESS_KEY=$dv" >> "$GITHUB_ENV"
+        echo "Exchanged OIDC token for a Develocity access token."

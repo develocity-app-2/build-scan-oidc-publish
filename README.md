@@ -1,7 +1,7 @@
 # build-scan-oidc-publish
 
-An experiment in publishing Gradle Build Scans to Develocity from GitHub Actions, working
-towards authenticating with a **GitHub OIDC token** instead of a long-lived access key.
+An experiment in publishing Gradle Build Scans to Develocity from GitHub Actions, authenticating
+with a **GitHub OIDC token** instead of a long-lived access key.
 
 Develocity server: <https://dv-self-paced-training.grdev.net>
 
@@ -68,9 +68,9 @@ to a project group containing only the granted project.
 
 ## Status
 
-- Publishing with a static access key: **working**.
 - Project-level access control: **working and verified**, in all three directions above.
-- OIDC: not started.
+- OIDC: workflow side **done**; needs the Develocity workload identity entry below.
+- The `DEVELOCITY_ACCESS_KEY` repository secret is **no longer read** and can be deleted.
 
 ## Result
 
@@ -115,14 +115,63 @@ path specifically. And the `forbidden` job was written to report *inconclusive* 
 when nothing published for the wrong reason — without that, this whole period would have shown a
 green `forbidden` and looked like proof that isolation worked, while proving nothing.
 
-## Next: OIDC
+## Authentication: GitHub OIDC
 
-Replace the static access key with a GitHub OIDC token exchange. That needs `id-token: write` in
-the workflow's `permissions:` block, and will exchange the OIDC token for a short-lived
-Develocity token via `POST /api/auth/token`, which takes `permissions` and `projectIds` and
-cannot mint a token with more access than the credential presenting it. The three jobs here
-become the regression test for it: the granted/forbidden/no-project split should hold exactly as
-it does now once the credential changes.
+There is no stored Develocity credential. Each job mints an OIDC token describing itself and
+trades it for a short-lived Develocity access token:
+
+1. `permissions: id-token: write` lets the job ask GitHub for an OIDC token. It lasts about five
+   minutes -- too short to survive a build, which is why it is exchanged rather than used
+   directly.
+2. `.github/actions/develocity-token` posts that token to `/api/auth/token` as a bearer
+   credential and receives a Develocity access token valid for an hour.
+3. That token is exported as `DEVELOCITY_ACCESS_KEY`, so the build authenticates exactly as it
+   did before. Nothing in the three builds changed.
+
+The exchange **deliberately requests no `permissions` or `projectIds`**. The returned token
+carries precisely what the matching workload identity entry grants, which is the thing under
+test; narrowing the request would test the request instead. The endpoint cannot mint a token with
+more access than the credential presenting it, so the entry's grants are the ceiling.
+
+The action logs the claims Develocity matches on (`iss`, `aud`, `repository`, `repository_owner`,
+`ref`, `workflow_ref`). The tokens themselves are masked; the claims are not secret, and they are
+the first thing to check when an entry does not match.
+
+### Develocity configuration
+
+In **Administration -> Access control -> Workload identity**, select **Add**:
+
+| Field | Value |
+| --- | --- |
+| Name | `build-scan-oidc-publish GitHub Actions` |
+| Issuer | `https://token.actions.githubusercontent.com` |
+| Audience | `https://dv-self-paced-training.grdev.net` |
+| Claim requirement | `repository` **Equals** `develocity-app-2/build-scan-oidc-publish` |
+| Assigned roles | a role carrying permission to publish a Build Scan |
+| Assigned project groups | `Group to publish with OIDC` |
+
+Notes that matter:
+
+- **The Audience must match** the `audience` the workflow requests, which is the server URL
+  above. GitHub defaults the audience to the repository owner URL when none is passed; this
+  workflow passes one explicitly, so the entry must carry the same value.
+- **At least one claim requirement is required.** An entry with none never matches any token.
+- **Assigned roles are not inherited from any user.** The workload identity is its own principal,
+  so it needs a role granting scan publication in its own right -- `testuser`'s roles do not
+  apply to it.
+- **The project groups are what make the experiment work.** `Group to publish with OIDC` contains
+  only `build-scan-oidc-publish`, so the token can publish there and nowhere else -- which is
+  what `forbidden` and `no-project-id` assert.
+- Use **Test** on the entry to confirm Develocity can reach GitHub's JWKS endpoint before saving.
+  Develocity fetches `https://token.actions.githubusercontent.com/.well-known/openid-configuration`
+  and the `jwks_uri` from it; if that egress is blocked, token validation fails after 24 hours of
+  failed refreshes even once it is working.
+
+Scoping on `repository` pins this to one repository. Tightening further to a branch or workflow
+file is possible with `ref` or `workflow_ref`, but note the docs' warning: **Starts With is a
+literal prefix check**, so `repository` Starts With `develocity-app-2/build-scan-oidc-publish`
+would also match a `-fork` repository. Equals avoids the issue entirely. Do not scope on `sub`,
+whose format changed for repositories created after 2026-07-15.
 
 ## Running locally
 
