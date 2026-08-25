@@ -157,6 +157,30 @@ Note that publishing itself is fine: with no `projectId` set at all, scans publi
 (<https://dv-self-paced-training.grdev.net/s/qqso35eyo55mm>). Only the project-associated path
 fails.
 
+**The control isolates the fault to the project ID.** Run
+[32881258571](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32881258571):
+
+| Job | Result |
+| --- | --- |
+| `granted` (`projectId` set) | server rejects the project ID |
+| `forbidden` (`projectId` set) | server rejects the project ID |
+| `no-project-id` (none set) | publishes — <https://dv-self-paced-training.grdev.net/s/kmtgbngl7tg3c> |
+
+Same credential, same server, same plugin, same build, three runs minutes apart. The only
+variable is whether `projectId` is set, and setting it to *any* value is what breaks. So:
+
+- Publishing is healthy and the credential is good.
+- The server treats every non-empty project ID we send as if it were empty.
+- Because both `granted` and `forbidden` fail identically, **nothing has yet been established
+  about access control** — the negative case has not been exercised at all.
+
+This also shows the credential can publish unassociated data, so **Allow data without an
+associated project** is in effect on this server.
+
+Explanation 1 (server predates project ID support on the publish path) now fits best: a server
+that does not recognise the field would plausibly validate a missing value and report it as
+empty. Explanation 2 (mismatched Project IDs) is still live and cheaper to check.
+
 ## Still open
 
 - What does Develocity do with a `projectId` that does not exist as a project? Accept, reject,
