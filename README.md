@@ -20,7 +20,7 @@ changing how the build authenticates.
   experiment:
   - **No `gradle/actions/setup-gradle`** — it injects its own Develocity init script and custom
     values, and the build's own configuration should be the only Develocity config in play.
-  - **No Gradle wrapper** — the `ubuntu-latest` image ships Gradle 9.7.0, so invoking `gradle`
+  - **No Gradle wrapper** — the `ubuntu-latest` image ships Gradle 9.7.1, so invoking `gradle`
     directly skips the distribution download.
   - **No `actions/setup-java`** — the image ships JDK 21, so the step just points `JAVA_HOME` at
     `JAVA_HOME_21_X64`.
@@ -57,5 +57,5 @@ gradle build
 ```
 
 There is no wrapper, so this uses whatever Gradle is on your `PATH` — which will not necessarily
-be the 9.7.0 that CI uses. Publishing will be rejected until this machine has an access key for
+be the 9.7.1 that CI uses. Publishing will be rejected until this machine has an access key for
 the server.
