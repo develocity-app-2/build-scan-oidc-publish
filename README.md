@@ -23,8 +23,17 @@ Two independent Gradle builds, byte-for-byte identical except for one line:
 | --- | --- | --- |
 | `projects/granted` | `build-scan-oidc-publish` | scan publishes |
 | `projects/forbidden` | `build-scan-oidc-forbidden` | publish rejected |
+| `projects/no-project-id` | *(none)* | scan publishes |
 
 `.github/workflows/build.yml` runs each as a separate job and asserts on the outcome.
+
+The third build is a control, and it discriminates between the readings of a failure:
+
+- If it publishes while the other two do not, the fault is specific to the **project ID path**.
+- If it also fails, either publishing is broken outright or **Allow data without an associated
+  project** is now unchecked, since enforcement is on.
+- If it reports the *project ID* error despite setting none, the plugin is sending an empty
+  project ID unconditionally — which would explain every observation above.
 
 ### Why the assertions grep the log
 

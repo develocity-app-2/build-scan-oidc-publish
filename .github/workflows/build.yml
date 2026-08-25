@@ -72,3 +72,37 @@ jobs:
             exit 1
           fi
           echo "PASS: no Build Scan was published to the forbidden project."
+
+  no-project-id:
+    name: no project ID (control - expect publish to SUCCEED)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The control. If this publishes while granted/forbidden do not, the fault
+      # is specific to the project ID path rather than to publishing.
+      - name: Build and assert a scan was published
+        working-directory: projects/no-project-id
+        env:
+          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+        run: |
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          set +e
+          gradle build --console=plain 2>&1 | tee build.log
+          echo "::notice::gradle exited with ${PIPESTATUS[0]}"
+          set -e
+          if grep -q 'project ID should be' build.log; then
+            echo "FINDING: the server complained about the project ID for a build that"
+            echo "      sets none. The plugin must be sending an empty project ID"
+            echo "      unconditionally, which would explain the other two jobs."
+            exit 1
+          fi
+          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
+            echo "PASS: a scan published with no project ID, so publishing itself is"
+            echo "      healthy and the fault is specific to the project ID path."
+          else
+            echo "FAIL: no scan published even with no project ID. Either publishing is"
+            echo "      broken outright, or 'Allow data without an associated project'"
+            echo "      is unchecked now that enforcement is on."
+            exit 1
+          fi
