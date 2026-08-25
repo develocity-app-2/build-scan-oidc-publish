@@ -21,7 +21,7 @@ jobs:
       # `env` expression context only sees workflow-defined variables, so it
       # expands runner variables like JAVA_HOME_21_X64 to the empty string.
       - name: Build
-        run: JAVA_HOME="$JAVA_HOME_21_X64" gradle build
+        run: JAVA_HOME="$JAVA_HOME_21_X64" gradle build -Ddevelocity.projectId=myProject
         env:
           # Static access key for now. This is the piece the experiment replaces
           # with a GitHub OIDC token exchange.
