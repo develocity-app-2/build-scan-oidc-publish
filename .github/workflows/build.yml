@@ -57,31 +57,32 @@ jobs:
           echo "::notice::gradle exited with ${PIPESTATUS[0]}"
           set -e
           # A rejected publish does not fail the Gradle build, so the exit code
-          # carries no signal. Assert on what the plugin printed instead -- and
-          # distinguish "access denied" from "this never got as far as asking",
-          # which would otherwise look identical: no scan URL either way.
-          if grep -q 'project ID should be' build.log; then
-            echo "INCONCLUSIVE: the plugin rejected the project ID locally, so the"
-            echo "      server was never asked whether this credential may publish"
-            echo "      to it. Nothing was proved about access control."
-            exit 1
-          fi
+          # carries no signal. Assert on what the plugin printed instead. Requiring
+          # the denial message, rather than merely the absence of a scan URL, is
+          # what stops an unrelated failure from passing as proof of isolation.
           if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
             echo "FAIL: a Build Scan was published to a project this credential"
             echo "      should have no access to. Access control is not holding."
             exit 1
           fi
-          echo "PASS: no Build Scan was published to the forbidden project."
+          if grep -q 'denied the request to publish the build scan' build.log; then
+            echo "PASS: the server denied the publish for want of project access."
+          else
+            echo "INCONCLUSIVE: nothing was published, but the server did not say it"
+            echo "      denied the request, so the reason is unaccounted for."
+            exit 1
+          fi
 
   no-project-id:
-    name: no project ID (control - expect publish to SUCCEED)
+    name: no project ID (expect publish to BE REJECTED)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      # The control. If this publishes while granted/forbidden do not, the fault
-      # is specific to the project ID path rather than to publishing.
-      - name: Build and assert a scan was published
+      # With project-level access control enforcing and unassociated data
+      # disallowed, a build that names no project is refused outright. This is the
+      # third leg of the access-control story, not a control any more.
+      - name: Build and assert the publish was rejected
         working-directory: projects/no-project-id
         env:
           DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
@@ -91,18 +92,15 @@ jobs:
           gradle build --console=plain 2>&1 | tee build.log
           echo "::notice::gradle exited with ${PIPESTATUS[0]}"
           set -e
-          if grep -q 'project ID should be' build.log; then
-            echo "FINDING: the server complained about the project ID for a build that"
-            echo "      sets none. The plugin must be sending an empty project ID"
-            echo "      unconditionally, which would explain the other two jobs."
+          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
+            echo "FAIL: a Build Scan published without naming any project, so"
+            echo "      unassociated data is still being accepted."
             exit 1
           fi
-          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
-            echo "PASS: a scan published with no project ID, so publishing itself is"
-            echo "      healthy and the fault is specific to the project ID path."
+          if grep -q 'due to a project ID being required' build.log; then
+            echo "PASS: the server refused a build that names no project."
           else
-            echo "FAIL: no scan published even with no project ID. Either publishing is"
-            echo "      broken outright, or 'Allow data without an associated project'"
-            echo "      is unchecked now that enforcement is on."
+            echo "INCONCLUSIVE: nothing was published, but not because a project ID"
+            echo "      was required, so the reason is unaccounted for."
             exit 1
           fi
