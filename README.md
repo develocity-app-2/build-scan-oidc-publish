@@ -177,9 +177,38 @@ variable is whether `projectId` is set, and setting it to *any* value is what br
 This also shows the credential can publish unassociated data, so **Allow data without an
 associated project** is in effect on this server.
 
-Explanation 1 (server predates project ID support on the publish path) now fits best: a server
-that does not recognise the field would plausibly validate a missing value and report it as
-empty. Explanation 2 (mismatched Project IDs) is still live and cheaper to check.
+**The Develocity-side configuration is confirmed correct.** From the server's Projects page:
+
+| ID | Display name | Project groups |
+| --- | --- | --- |
+| `build-scan-oidc-publish` | Test publish with OIDC | Group to publish with OIDC |
+| `build-scan-oidc-forbidden` | Test publish is forbidden with OIDC | *(none)* |
+
+`testuser` is a member of `Group to publish with OIDC` and of no other project group, so the
+grants are exactly what the experiment needs — access to `build-scan-oidc-publish`, none to
+`build-scan-oidc-forbidden`. The IDs match the two `settings.gradle.kts` files character for
+character. That eliminates the mismatched-ID explanation.
+
+The credential is also definitely reaching the server: the access key's *Last used* is the same
+minute as the CI run, from an Azure IP address.
+
+The server is a latest-unreleased build with project-level access control and GitHub OIDC
+support, so "the server is too old" is eliminated too. What is left is a **plugin/server
+mismatch**: released plugin 4.5.0 sending a project ID in a form this server build does not read,
+and reporting the absent value as empty.
+
+The `diagnose` matrix job probes exactly that, sweeping plugin version against project ID. It is
+a probe rather than a gate — a green cell published, a red one did not:
+
+- `4.5.0` with `bogus1`, an existing project whose ID is short and purely alphanumeric, rules out
+  the hyphens and length of our own IDs.
+- `4.4.3` and `4.0.3` against the real target: if an older plugin publishes, the fault is in the
+  4.5.0-to-this-server combination specifically.
+
+One loose end worth noting: `testuser`'s only role is **Student**. If that role does not carry
+the permission to publish a scan *into a project*, the server might refuse and report it
+confusingly. That would be consistent with everything observed, and is worth checking against
+the role's permission list.
 
 ## Still open
 

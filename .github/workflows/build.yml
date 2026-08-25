@@ -106,3 +106,46 @@ jobs:
             echo "      is unchecked now that enforcement is on."
             exit 1
           fi
+
+  # A probe, not a gate. Each cell attempts a publish with one (plugin version,
+  # project ID) pair; a green cell published, a red one did not. The point is to
+  # separate "these project IDs are wrong" from "this plugin cannot send a
+  # project ID to this server at all".
+  diagnose:
+    name: "probe: dv ${{ matrix.plugin }} / id=${{ matrix.pid }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # An existing project whose ID is short and purely alphanumeric, to
+          # rule out the hyphens and the length of our own IDs.
+          - { plugin: "4.5.0", pid: "bogus1" }
+          # The real target, on the latest plugin.
+          - { plugin: "4.5.0", pid: "build-scan-oidc-publish" }
+          # Same target on older plugins. If one of these publishes, the fault is
+          # in the 4.5.0-to-this-server combination.
+          - { plugin: "4.4.3", pid: "build-scan-oidc-publish" }
+          - { plugin: "4.0.3", pid: "build-scan-oidc-publish" }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Attempt publish
+        working-directory: projects/diagnostic
+        env:
+          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+        run: |
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          sed -i 's/version "4.5.0"/version "${{ matrix.plugin }}"/' settings.gradle.kts
+          grep 'com.gradle.develocity' settings.gradle.kts
+          set +e
+          gradle build -Ddevelocity.projectId='${{ matrix.pid }}' --console=plain 2>&1 | tee build.log
+          echo "::notice::gradle exited with ${PIPESTATUS[0]}"
+          set -e
+          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
+            echo "PUBLISHED: plugin ${{ matrix.plugin }} accepted project ID '${{ matrix.pid }}'."
+          else
+            echo "NOT PUBLISHED: plugin ${{ matrix.plugin }}, project ID '${{ matrix.pid }}'."
+            grep -iE 'project ID|rejected|denied|forbidden|not authorized|permission' build.log || true
+            exit 1
+          fi
