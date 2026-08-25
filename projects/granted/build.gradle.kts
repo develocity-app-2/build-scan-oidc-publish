@@ -1,0 +1,21 @@
+plugins {
+    id("java-library")
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+testing {
+    suites {
+        getByName<JvmTestSuite>("test") {
+            useJUnitJupiter()
+        }
+    }
+}

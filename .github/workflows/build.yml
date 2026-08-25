@@ -9,20 +9,66 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  granted:
+    name: granted project (expect publish to SUCCEED)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       # No wrapper and no setup-gradle/setup-java: the runner image already has
-      # Gradle 9.7.1 and JDK 21, so the job downloads nothing and the build's own
+      # Gradle and JDK 21, so the job downloads no toolchain and the build's own
       # configuration is the only Develocity config in play.
-      # JAVA_HOME is set in the shell, not via `env:` with ${{ env.* }} — the
-      # `env` expression context only sees workflow-defined variables, so it
-      # expands runner variables like JAVA_HOME_21_X64 to the empty string.
-      - name: Build
-        run: JAVA_HOME="$JAVA_HOME_21_X64" gradle build -Ddevelocity.projectId=myProject
+      - name: Build and assert a scan was published
+        working-directory: projects/granted
         env:
-          # Static access key for now. This is the piece the experiment replaces
-          # with a GitHub OIDC token exchange.
           DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+        run: |
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          set +e
+          gradle build --console=plain 2>&1 | tee build.log
+          echo "::notice::gradle exited with ${PIPESTATUS[0]}"
+          set -e
+          if grep -q 'project ID should be' build.log; then
+            echo "FAIL: the plugin rejected the project ID before publishing."
+            echo "      This is a configuration problem, not an access decision."
+            exit 1
+          fi
+          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
+            echo "PASS: a Build Scan was published to the granted project."
+          else
+            echo "FAIL: expected a published Build Scan, but no scan URL was emitted."
+            exit 1
+          fi
+
+  forbidden:
+    name: forbidden project (expect publish to BE REJECTED)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and assert the publish was rejected
+        working-directory: projects/forbidden
+        env:
+          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+        run: |
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          set +e
+          gradle build --console=plain 2>&1 | tee build.log
+          echo "::notice::gradle exited with ${PIPESTATUS[0]}"
+          set -e
+          # A rejected publish does not fail the Gradle build, so the exit code
+          # carries no signal. Assert on what the plugin printed instead -- and
+          # distinguish "access denied" from "this never got as far as asking",
+          # which would otherwise look identical: no scan URL either way.
+          if grep -q 'project ID should be' build.log; then
+            echo "INCONCLUSIVE: the plugin rejected the project ID locally, so the"
+            echo "      server was never asked whether this credential may publish"
+            echo "      to it. Nothing was proved about access control."
+            exit 1
+          fi
+          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
+            echo "FAIL: a Build Scan was published to a project this credential"
+            echo "      should have no access to. Access control is not holding."
+            exit 1
+          fi
+          echo "PASS: no Build Scan was published to the forbidden project."
