@@ -61,12 +61,22 @@ runs:
         #    projectIds are requested, so the token carries exactly what the
         #    matching workload identity entry grants -- which is the thing under
         #    test. Narrowing here would test this request instead.
-        if ! dv=$(curl -sS --fail-with-body -X POST \
-              "${{ inputs.server-url }}/api/auth/token?expiresInHours=${{ inputs.expires-in-hours }}" \
-              -H "Authorization: Bearer $oidc"); then
-          echo "Exchange failed. Develocity returned: $dv"
-          echo "A 401/403 here usually means no workload identity entry matched"
-          echo "the claims above -- check issuer, audience and claim requirements."
+        # Headers and empty body match gradle/actions' own client for this
+        # endpoint; this server 415s a POST with no content type.
+        code=$(curl -sS -o /tmp/dv-token.out -w '%{http_code}' -X POST \
+          "${{ inputs.server-url }}/api/auth/token?expiresInHours=${{ inputs.expires-in-hours }}" \
+          -H 'Content-Type: application/json' \
+          -H "Authorization: Bearer $oidc" \
+          --data '')
+        dv=$(cat /tmp/dv-token.out)
+        if [ "$code" != "200" ]; then
+          echo "Exchange failed with HTTP $code. Develocity returned:"
+          echo "  $dv"
+          echo
+          echo "401/403 here means no workload identity entry matched the claims"
+          echo "above. The usual cause is the Audience: this workflow requests"
+          echo "'${{ inputs.audience }}', and the entry must carry that exact value"
+          echo "rather than GitHub's default of the repository owner URL."
           exit 1
         fi
         echo "::add-mask::$dv"
