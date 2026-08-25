@@ -210,6 +210,54 @@ the permission to publish a scan *into a project*, the server might refuse and r
 confusingly. That would be consistent with everything observed, and is worth checking against
 the role's permission list.
 
+## Conclusion: the server rejects every project ID
+
+Run [32882459453](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32882459453):
+
+| Plugin | Project ID | Result |
+| --- | --- | --- |
+| 4.5.0 | `bogus1` (existing, short, alphanumeric) | rejected |
+| 4.5.0 | `build-scan-oidc-publish` | rejected |
+| 4.4.3 | `build-scan-oidc-publish` | rejected |
+| 4.0.3 | `build-scan-oidc-publish` | rejected |
+| any | *(unset)* | **publishes** |
+
+Every cell returned the same sentence: `The project ID should be a non empty string of 256 chars
+maximum`. The behaviour is invariant under every dimension available from the build side:
+
+- **The ID's value and shape.** A short alphanumeric existing project fails identically to our
+  hyphenated ones, and to a non-existent one.
+- **How it is set.** Programmatic and system property behave the same.
+- **Plugin version.** 4.0.3, 4.4.3 and 4.5.0 all fail, and plugin 4.0.3 emits the *identical
+  sentence* despite being a different plugin generation with different surrounding wording. A
+  string that survives three plugin generations verbatim is coming from the server, not the
+  plugin.
+- **Whether the project exists and is granted.** Verified correct in the admin UI.
+
+Combined with the two earlier observations — the message appears only after authentication
+succeeds, and omitting the project ID publishes fine — the conclusion is that **this server build
+refuses any project ID a build sends, reporting a present, valid value as empty**. Nothing on the
+Gradle side can work around that.
+
+The role theory is also dead: `testuser`'s Student role clearly carries permission to publish
+scans, because the no-project-ID control publishes with that very credential. The only difference
+in the failing cases is the project association.
+
+Since the server is an unreleased build, this is worth raising with whoever owns it. The
+one-line summary for them: *any project ID from any plugin version is rejected as empty, while
+omitting it publishes normally, on a credential whose project grants are correct.*
+
+### What this means for the experiment
+
+The harness is working — it refused to report success. Both `granted` and `forbidden` fail for
+the same upstream reason, so **no conclusion about access control has been reached**, and the
+`forbidden` job deliberately reports "inconclusive" rather than passing. A green `forbidden` here
+would have been the worst outcome: it would have looked like proof of isolation while proving
+nothing.
+
+The experiment resumes the moment a project ID is accepted at all; nothing in the repository
+needs to change for that.
+
 ## Still open
 
 - What does Develocity do with a `projectId` that does not exist as a project? Accept, reject,
