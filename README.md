@@ -69,7 +69,11 @@ to a project group containing only the granted project.
 ## Status
 
 - Project-level access control: **working and verified**, in all three directions above.
-- OIDC: workflow side **done**; needs the Develocity workload identity entry below.
+- OIDC: workflow side **done and verified** as far as it can be — the token is minted with the
+  right claims and the exchange request matches `gradle/actions`' own client for this endpoint.
+  The exchange currently returns **HTTP 401**, which is a *token-matching* failure: no workload
+  identity entry matched the claims. Grants are not involved — a matching entry with insufficient
+  roles would return a token and fail later, at publish time.
 - The `DEVELOCITY_ACCESS_KEY` repository secret is **no longer read** and can be deleted.
 
 ## Result
