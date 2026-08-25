@@ -16,7 +16,9 @@ changing how the build authenticates.
 - `build.gradle.kts` is a trivial `java-library` with one class and one JUnit 5 test — enough
   for the scan to carry real compile and test data.
 - `.github/workflows/build.yml` runs `./gradlew build` with `DEVELOCITY_ACCESS_KEY` in the
-  environment of the Gradle step.
+  environment of the Gradle step. It deliberately does **not** use
+  `gradle/actions/setup-gradle`: that action injects its own Develocity init script and custom
+  values, and this experiment needs the build's own configuration to be the only thing in play.
 
 ## Setup required before the first run
 

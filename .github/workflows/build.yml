@@ -19,8 +19,9 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: gradle/actions/setup-gradle@v6
-
+      # Deliberately no gradle/actions/setup-gradle: it injects its own
+      # Develocity init script and custom values, which would confound the
+      # experiment. The wrapper is invoked directly.
       - name: Build
         run: ./gradlew build
         env:
