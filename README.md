@@ -86,21 +86,33 @@ The project ID should be a non empty string of 256 chars maximum
 ```
 
 `myProject` is a non-empty string well under 256 characters, so the message does not describe
-the input. Untested hypotheses, in rough order of likelihood:
+the input.
 
-1. The ID charset is narrower than the message admits and `myProject` is rejected for its
-   uppercase letter. The two builds here use lowercase-and-hyphens IDs, which would sidestep it.
-2. This server predates project ID support, and the validation is server-side.
-3. The system-property path is broken in plugin 4.5.0 in a way the programmatic path is not.
+**The same error occurs via the programmatic path, with lowercase IDs.** Run
+[32879288852](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32879288852)
+set `projectId` in `settings.gradle.kts` to `build-scan-oidc-publish` and
+`build-scan-oidc-forbidden`. Both builds succeeded; both printed the identical message and
+published nothing. That eliminates two explanations:
 
-The two builds set `projectId` **programmatically** instead, which distinguishes 1 and 3 from 2:
-if `projects/granted` publishes, the programmatic path works and the server supports project IDs.
+- **Not the ID charset.** Lowercase-and-hyphen IDs fail exactly as `myProject` did.
+- **Not the system-property path.** The programmatic path fails identically, so the two
+  mechanisms share a cause further downstream.
 
-This also exposed a trap in the negative test. A locally-rejected project ID and a
+The message is printed *after* `Publishing Build Scan to Develocity...`, which places it at or
+after the publish attempt rather than in local validation — consistent with the server, not the
+plugin, being the one objecting.
+
+The leading explanation now is simply that **none of these projects exist yet**. `myProject`,
+`build-scan-oidc-publish` and `build-scan-oidc-forbidden` have never been created in
+Develocity's **Administration → Access control → Projects**, and a server refusing an unknown
+project ID with a badly worded validation message fits every observation so far. Confirming this
+requires the Develocity-side setup below, which cannot be driven from here.
+
+This run also justified the tightened assertions. A locally-rejected project ID and a
 server-refused publish look **identical** from the outside — no scan URL in either case — so the
-`forbidden` job would have scored that validation error as a pass. Both jobs now fail on the
-validation message explicitly, and the `forbidden` job reports it as inconclusive rather than
-success: if the plugin never asked the server, nothing was proved about access control.
+original `forbidden` check would have scored this validation error as a pass and "proved" access
+control was working when nothing had been tested. Both jobs now fail on the validation message
+explicitly, and `forbidden` reports it as inconclusive rather than success.
 
 ## Still open
 
@@ -109,8 +121,12 @@ success: if the plugin never asked the server, nothing was proved about access c
 - What exactly does an access-denied rejection look like in the build log? The `forbidden`
   assertion is currently "no scan URL, and not the validation error", which is still loose; once
   the real message is known it should be tightened to match it.
-- What version is this server? It matters for hypothesis 2, and `/api/version` needs
-  authentication.
+- What version is this server? `/api/version` needs authentication, so this needs someone
+  signed in. It matters because it bounds whether project-level access control exists here
+  at all.
+- Does publishing with **no** `projectId` still work? It did before these commits, and it is
+  the control case that separates "project IDs are broken here" from "these particular project
+  IDs are unknown".
 
 ## Running locally
 
