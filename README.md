@@ -137,6 +137,31 @@ The action logs the claims Develocity matches on (`iss`, `aud`, `repository`, `r
 `ref`, `workflow_ref`). The tokens themselves are masked; the claims are not secret, and they are
 the first thing to check when an entry does not match.
 
+### Claims this workflow actually presents
+
+Measured from run
+[32909709401](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32909709401),
+not assumed:
+
+```
+iss              = 'https://token.actions.githubusercontent.com'
+aud              = 'https://dv-self-paced-training.grdev.net'
+repository       = 'develocity-app-2/build-scan-oidc-publish'
+repository_owner = 'develocity-app-2'
+ref              = 'refs/heads/main'
+workflow_ref     = 'develocity-app-2/build-scan-oidc-publish/.github/workflows/build.yml@refs/heads/main'
+```
+
+Until a matching entry exists, the exchange fails and every job fails with:
+
+```
+curl: (22) The requested URL returned error: 401
+Exchange failed. Develocity returned: {"status":401,...,"title":"Something was wrong with the request."}
+```
+
+That 401 is the expected state before configuration, and it is the whole of what is outstanding:
+the workflow mints the token and presents it correctly.
+
 ### Develocity configuration
 
 In **Administration -> Access control -> Workload identity**, select **Add**:
