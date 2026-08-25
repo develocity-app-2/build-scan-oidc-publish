@@ -35,8 +35,22 @@ jobs:
             fi
           }
 
-          echo "== access key =="
-          exchange "access key" "$ACCESS_KEY"
+          # The secret may hold the "host=key" form, which the Gradle plugin
+          # parses but which is not a bearer token. Use the bare key.
+          bare="${ACCESS_KEY##*=}"
+          echo "::add-mask::$bare"
+          if [ "$bare" != "$ACCESS_KEY" ]; then
+            echo "  (secret is in host=key form; using the bare key)"
+          fi
+
+          echo "== access key, /api/auth/token =="
+          exchange "access key" "$bare"
+
+          echo "== access key, /api/builds =="
+          code=$(curl -sS -o /tmp/b -w '%{http_code}' \
+            -H "Authorization: Bearer $bare" "$DV/api/builds?since=0&maxBuilds=1")
+          echo "  /api/builds -> HTTP $code"
+          echo "     body: $(head -c 200 /tmp/b)"
 
           oidc=$(curl -sS --fail-with-body \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
