@@ -15,10 +15,18 @@ changing how the build authenticates.
   `uploadInBackground = false` so the upload finishes before the runner tears the job down.
 - `build.gradle.kts` is a trivial `java-library` with one class and one JUnit 5 test — enough
   for the scan to carry real compile and test data.
-- `.github/workflows/build.yml` runs `./gradlew build` with `DEVELOCITY_ACCESS_KEY` in the
-  environment of the Gradle step. It deliberately does **not** use
-  `gradle/actions/setup-gradle`: that action injects its own Develocity init script and custom
-  values, and this experiment needs the build's own configuration to be the only thing in play.
+- `.github/workflows/build.yml` runs `gradle build` with `DEVELOCITY_ACCESS_KEY` in the
+  environment of the Gradle step. Three deliberate omissions, all in service of a clean, fast
+  experiment:
+  - **No `gradle/actions/setup-gradle`** — it injects its own Develocity init script and custom
+    values, and the build's own configuration should be the only Develocity config in play.
+  - **No Gradle wrapper** — the `ubuntu-latest` image ships Gradle 9.7.0, so invoking `gradle`
+    directly skips the distribution download.
+  - **No `actions/setup-java`** — the image ships JDK 21, so the step just points `JAVA_HOME` at
+    `JAVA_HOME_21_X64`.
+
+  The job therefore downloads no toolchain at all; only the plugin and test dependencies are
+  fetched.
 
 ## Setup required before the first run
 
@@ -29,7 +37,7 @@ gh secret set DEVELOCITY_ACCESS_KEY --repo develocity-app-2/build-scan-oidc-publ
 ```
 
 Generate the key value from the Develocity UI (*My settings → Access keys*), or locally with
-`./gradlew provisionDevelocityAccessKey` and read it out of `~/.gradle/develocity/keys.properties`.
+`gradle provisionDevelocityAccessKey` and read it out of `~/.gradle/develocity/keys.properties`.
 
 The secret value must be the bare key, **not** the `host=key` form used in
 `keys.properties` — the `DEVELOCITY_ACCESS_KEY` variable accepts either, but the bare key is
@@ -45,7 +53,9 @@ unambiguous for a single server.
 ## Running locally
 
 ```
-./gradlew build
+gradle build
 ```
 
-Publishing will be rejected until this machine has an access key for the server.
+There is no wrapper, so this uses whatever Gradle is on your `PATH` — which will not necessarily
+be the 9.7.0 that CI uses. Publishing will be rejected until this machine has an access key for
+the server.
