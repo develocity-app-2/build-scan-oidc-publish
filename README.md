@@ -114,6 +114,40 @@ original `forbidden` check would have scored this validation error as a pass and
 control was working when nothing had been tested. Both jobs now fail on the validation message
 explicitly, and `forbidden` reports it as inconclusive rather than success.
 
+**It is the server rejecting the ID, and the ID is correct.** Two further checks pin this down.
+
+*The plugin resolves the value properly.* Printing the property during settings evaluation gives:
+
+```
+>>> projectId type: org.gradle.api.internal.provider.DefaultProperty
+>>> projectId value: [build-scan-oidc-publish]
+```
+
+so the Kotlin DSL assignment takes effect and the configured value is intact on the build side.
+
+*The complaint only appears after authentication succeeds.* Running the same build locally with
+no access key fails earlier, with the auth error, and never mentions the project ID. The project
+ID message therefore comes from the server after it has accepted the credential — it is not
+local validation.
+
+*It survives the projects existing.* Run
+[32880058113](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32880058113),
+after the two projects were created in Develocity and the user granted access to
+`build-scan-oidc-publish`, produced the identical message in both jobs. So "the project does not
+exist" is not sufficient to explain it either.
+
+What remains:
+
+1. **The server predates project ID support on the publish path**, and answers with a generic
+   validation error. Needs the server version to confirm or rule out.
+2. **The created Project IDs do not match these strings exactly.** The Add Project dialog takes
+   both a Display Name and a Project ID, and only the latter is what builds send.
+3. **A plugin/server defect** in how plugin 4.5.0 transmits `projectId` to this server version.
+
+Note that publishing itself is fine: with no `projectId` set at all, scans publish normally
+(<https://dv-self-paced-training.grdev.net/s/qqso35eyo55mm>). Only the project-associated path
+fails.
+
 ## Still open
 
 - What does Develocity do with a `projectId` that does not exist as a project? Accept, reject,
