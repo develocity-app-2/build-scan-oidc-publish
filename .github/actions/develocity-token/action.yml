@@ -53,8 +53,13 @@ runs:
         payload = sys.argv[1].split(".")[1]
         payload += "=" * (-len(payload) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload))
-        for c in ("iss", "aud", "repository", "repository_owner", "ref", "workflow_ref"):
-            print(f"  {c} = {claims.get(c)!r}")
+        # The JSON type matters: Develocity treats numeric, boolean and array
+        # claims as absent for claim requirements, so a numeric id cannot be
+        # matched on even though it is the rename-proof identifier.
+        for c in ("iss", "aud", "repository", "repository_owner", "ref",
+                  "workflow_ref", "repository_id", "repository_owner_id"):
+            v = claims.get(c)
+            print(f"  {c} = {v!r} ({type(v).__name__})")
         PY
 
         # 2. Exchange it for a Develocity access token. No permissions or
