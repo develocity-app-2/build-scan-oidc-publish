@@ -94,6 +94,11 @@ runs:
           *) echo "Expected a JWT from the exchange, got something else."; exit 1 ;;
         esac
 
-        # 3. Hand it to the build in place of a stored access key.
-        echo "DEVELOCITY_ACCESS_KEY=$dv" >> "$GITHUB_ENV"
-        echo "Exchanged OIDC token for a Develocity access token."
+        # 3. Hand it to the build in place of a stored access key. The plugin
+        #    requires the host-qualified form and rejects a bare token outright,
+        #    failing before it even applies, so derive the host from server-url.
+        host='${{ inputs.server-url }}'
+        host="${host#*://}"
+        host="${host%%/*}"
+        echo "DEVELOCITY_ACCESS_KEY=${host}=${dv}" >> "$GITHUB_ENV"
+        echo "Exchanged OIDC token for a Develocity access token (host $host)."

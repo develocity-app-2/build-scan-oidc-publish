@@ -244,12 +244,20 @@ preinstalled Gradle. Publishing is refused until the machine has an access key f
 
 ## A note on the access key format
 
-`DEVELOCITY_ACCESS_KEY` accepts the `«host»=«key»` form, which build tools parse to avoid sending
-a key to the wrong server. The REST API does not: `Authorization: Bearer` takes the bare key, and
-the host-qualified form is rejected as one malformed token with a 401 indistinguishable from the
-OIDC failure above — which briefly made the exchange endpoint look broken for both credentials.
-`probe-exchange.yml` strips the prefix for this reason. The matrix's access-key arm does not,
-because it hands the value to the Gradle plugin, which understands both forms.
+The two ends of this want **opposite** forms of the same credential, and each rejects the other's:
 
-Note that the secret is therefore required for the access-key half of the comparison; deleting it
-turns that column red rather than merely skipping it.
+| Consumer | Wants | Given the other form |
+| --- | --- | --- |
+| `DEVELOCITY_ACCESS_KEY` (Gradle plugin 4.5.0) | `«host»=«key»` | build fails before the plugin applies: *value is malformed* |
+| `Authorization: Bearer` (REST API) | bare key | HTTP 401 |
+
+So the exchange action must re-attach the host prefix to the token it receives, and
+`probe-exchange.yml` must strip it from the stored secret. Both directions cost time here: the
+stripped-prefix case made the exchange endpoint look broken for *both* credentials, and the
+missing-prefix case made a working exchange look like a publishing failure.
+
+The host-qualified form exists so a build tool cannot send a key to a server it was not issued
+for. The REST API has no such notion — it sees the whole string as one token.
+
+Note the secret is required for the access-key half of the comparison; deleting it turns that
+column red rather than merely skipping it.
