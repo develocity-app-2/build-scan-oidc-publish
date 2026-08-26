@@ -14,6 +14,7 @@ project-level access control and workload identity support).
 | Project-level access control | **verified**, in all three directions |
 | OIDC token exchange | **working**: `POST /api/auth/token` returns a Develocity token |
 | OIDC end to end | **working**: all six cells pass, OIDC matching the access key exactly |
+| Dynamic project group allocation | **working**: groups granted from the token's `repository` claim |
 
 `build.yml` runs both credentials side by side, so the comparison is one run
 ([32916347289](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32916347289)):
@@ -191,6 +192,59 @@ with the server's own response behind every cell:
 Project-level access control holds in all three directions, and holds identically whether the
 build authenticates with a stored access key or with a token exchanged from a GitHub OIDC token.
 No long-lived Develocity credential is needed in CI to get that property.
+
+### Dynamic project group allocation from a token claim
+
+The entry does not have to name its project groups. Develocity can read a **claim** from the token
+and grant whichever project groups carry a matching mapping value, which lets one entry serve a
+whole organisation.
+
+Configured here as:
+
+| Where | Setting | Value |
+| --- | --- | --- |
+| Workload identity entry | Assigned project groups | *(cleared)* |
+| Workload identity entry | Project groups claim | `repository` |
+| Project group `build-scan-oidc-publish-group` | Identity provider mapping | `develocity-app-2/build-scan-oidc-publish` |
+
+Run [32917629791](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32917629791)
+behaves identically to the statically-assigned configuration:
+
+| | `granted` | `forbidden` | `no-project-id` |
+| --- | --- | --- | --- |
+| **oidc** | published — `/s/zo7r3swjkiyqg` | denied | refused, project required |
+
+Both halves matter. With **Assigned project groups** empty, the only route to publishing
+`build-scan-oidc-publish` is the claim matching the group's mapping value — so `granted`
+publishing proves the dynamic grant happened. And `forbidden` still being denied proves it
+granted *that group only*, rather than widening access, which is the failure mode a dynamic grant
+could plausibly have.
+
+The practical appeal is that nothing here is repository-specific except the project group's own
+mapping value. One entry scoped to `repository_owner` Equals `develocity-app-2` would serve every
+repository in the org, each landing in whichever project group names it.
+
+**Constraints worth knowing**, none of them in the product docs:
+
+- **One mapping value per project group.** Many-to-one is not supported — you cannot map two
+  claim values to a single project group. One-to-many is fine: one value can grant several groups.
+  Documented only in the support KB article *FAQ: Using Project Groups with Identity Provider
+  (IdP) Mapping*.
+- **GitHub emits a fixed claim set.** The `sub` format can be customised, but arbitrary claims
+  cannot be added, so the claim named here must be one GitHub already sends — `repository`,
+  `repository_owner`, `ref`, `environment`, `workflow_ref`, `job_workflow_ref`, `ref_type`.
+- **The two claim fields have opposite type rules.** Claim *requirements* are string-only; the
+  docs say numeric, boolean and array claims "are treated as absent and the requirement fails".
+  The roles and project-groups *claim* explicitly supports "string and list", where a list grants
+  every group matching any element. So an array claim silently fails in one field and works in the
+  other.
+
+**Documentation status.** `workload-identity.adoc` exists only on the `release-dv-2026.3.0`
+branch of `gradle/dv-docs`, not on `main`, so it is not published — PR 2614 targeted `main` and
+was closed because 2026.3 is a staged directory there that version-sync would wipe; PR 2640
+re-landed it on the release branch. The feature gets three sentences, which cross-reference
+`identity-provider.adoc` for the mapping values — a page that does not mention project groups at
+all, in either 2026.2 or 2026.3.
 
 ### Why the access key is still here
 
