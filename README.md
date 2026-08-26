@@ -192,6 +192,19 @@ Project-level access control holds in all three directions, and holds identicall
 build authenticates with a stored access key or with a token exchanged from a GitHub OIDC token.
 No long-lived Develocity credential is needed in CI to get that property.
 
+### Why the access key is still here
+
+The access-key arm and the `DEVELOCITY_ACCESS_KEY` secret are kept on purpose, even though
+nothing needs them to publish any more. They are the control. Every wrong turn in this
+repository's history was diagnosed by having a known-good credential to run the same request
+against — the 401 was pinned to the OIDC token rather than the request shape that way, and the
+over-scoped token was visible only because the access key was denied for the same build in the
+same run. A pure-OIDC repository would be the better demo and the worse instrument.
+
+`probe-exchange.yml` (`workflow_dispatch`) is kept for the same reason: it exercises the exchange
+alone, answering "is it the credential or everything after it?" in about a minute without a
+Gradle build in the way.
+
 ## How authentication works
 
 There is no stored Develocity credential in the build jobs. Each mints an OIDC token describing
