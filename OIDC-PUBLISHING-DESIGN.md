@@ -202,11 +202,14 @@ publishing successfully moments earlier under a `repository` requirement began f
 the requirement changed to `aud`. Nothing else differed.
 
 Since `iss` works and both claims have their own dedicated field on the entry, the failure is
-specific to `aud` rather than a general exclusion of standard claims. The likeliest explanation is
-typing: a JWT's `aud` is permitted to be either a string or an array of strings, and JWT libraries
-routinely expose it as a collection. Develocity's matcher treats array claims as absent, so an
-`aud` requirement would fail even against a token whose `aud` is a lone string. That is a
-hypothesis, not a confirmed root cause, but it fits every observation.
+specific to `aud` rather than a general exclusion of standard claims.
+
+The token itself narrows it further: GitHub sends `aud` as a **plain JSON string** (§7), so nothing
+on the wire is an array. If the array-claims-are-absent rule is what defeats an `aud` requirement,
+the array is introduced by Develocity's own JWT parsing — libraries commonly normalise `aud` to a
+collection because the JWT spec permits either form, and `aud` is the only claim carrying that dual
+typing. Hypothesis rather than confirmed cause, but it is now a hypothesis about the server's
+parsing rather than about the token.
 
 Workable match-all requirements, in preference order:
 
@@ -345,3 +348,74 @@ Behaviour as repositories arrive:
 
 Registration is what grants capability. Until it happens the credential is inert, which is what
 makes opening authentication to every repository tolerable.
+
+## 7. Appendix: what a GitHub Actions OIDC token contains
+
+Captured from a real token. Values are placeholders; **types and shapes are exact**. Header:
+
+```json
+{ "alg": "RS256", "kid": "«uuid»", "typ": "JWT", "x5t": "«thumbprint»" }
+```
+
+Payload — 31 claims. Everything is a JSON **string** except `exp`, `iat` and `nbf`, which are
+integers:
+
+```json
+{
+  "actor": "example-user",
+  "actor_id": "179734",
+  "aud": "https://develocity.example.com",
+  "base_ref": "",
+  "check_run_id": "98234261885",
+  "event_name": "workflow_dispatch",
+  "exp": 1787760411,
+  "head_ref": "",
+  "iat": 1787760111,
+  "iss": "https://token.actions.githubusercontent.com",
+  "job_workflow_ref": "example-org/example-repo/.github/workflows/build.yml@refs/heads/main",
+  "job_workflow_sha": "«sha»",
+  "jti": "«uuid»",
+  "nbf": 1787759811,
+  "ref": "refs/heads/main",
+  "ref_protected": "false",
+  "ref_type": "branch",
+  "repository": "example-org/example-repo",
+  "repository_id": "1234567890",
+  "repository_owner": "example-org",
+  "repository_owner_id": "317448489",
+  "repository_visibility": "public",
+  "run_attempt": "1",
+  "run_id": "«run id»",
+  "run_number": "5",
+  "runner_environment": "github-hosted",
+  "sha": "«sha»",
+  "sub": "repo:example-org@317448489/example-repo@1234567890:ref:refs/heads/main",
+  "workflow": "build",
+  "workflow_ref": "example-org/example-repo/.github/workflows/build.yml@refs/heads/main",
+  "workflow_sha": "«sha»"
+}
+```
+
+Implications for claim requirements, since the matcher reads strings and treats other types as
+absent:
+
+| Claim | Type | Usable as a requirement |
+| --- | --- | --- |
+| `iss`, `repository`, `repository_owner`, `ref`, `ref_type`, `workflow_ref`, `job_workflow_ref` | string | yes — the documented set |
+| `repository_id`, `repository_owner_id`, `actor_id`, `run_id`, `check_run_id`, `run_number`, `run_attempt` | string | yes — every identifier is a string, so ids are matchable |
+| `repository_visibility`, `runner_environment`, `event_name`, `actor`, `sha`, `base_ref`, `head_ref` | string | yes — outside the documented list but equally usable |
+| `ref_protected` | string `"false"` | yes — a string, not a boolean, despite reading like one |
+| `aud` | string | **no** — see §5.1 |
+| `exp`, `iat`, `nbf` | integer | no — numeric claims are treated as absent |
+
+Two of these are worth a second look when hardening an entry:
+
+- **`runner_environment`** is `github-hosted` or `self-hosted`. Requiring `github-hosted` stops an
+  entry accepting tokens minted on self-hosted runners.
+- **`repository_visibility`** is `public`, `private` or `internal`, which allows an entry to exclude
+  public repositories.
+
+And a warning the token makes concrete: **`sub` now embeds numeric ids** —
+`repo:«owner»@«owner_id»/«repo»@«repo_id»:ref:«ref»` — for repositories created after 2026-07-15.
+Any rule written against the older `repo:«owner»/«repo»:ref:«ref»` form silently stops matching, so
+do not scope on `sub`.

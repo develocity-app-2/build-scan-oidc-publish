@@ -309,10 +309,79 @@ field held the same value, and the repository that had published minutes earlier
 changed.
 
 `iss` working rules out the theory that claims with their own dedicated entry field are excluded
-from the matcher — `iss` has one too. The likeliest remaining explanation is typing: a JWT's `aud`
-may be a string *or* an array, JWT libraries commonly expose it as a collection, and Develocity
-treats array claims as absent. That would make an `aud` requirement fail even when the token's
-`aud` is a single string. Hypothesis, not confirmed.
+from the matcher — `iss` has one too.
+
+The full token dump below narrows what is left. GitHub sends `aud` as a **plain JSON string**, so
+nothing on the wire is an array. If the array-claims-are-absent rule is what defeats an `aud`
+requirement, the array must be introduced by Develocity's own JWT parsing — libraries commonly
+normalise `aud` to a collection because the JWT spec permits either form, and `aud` is the only
+claim with that dual typing. That remains a hypothesis, but it is now a hypothesis about the
+server's parsing rather than about the token.
+
+### What GitHub actually sends
+
+Captured in run
+[32986619568](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32986619568).
+Header:
+
+```json
+{ "alg": "RS256", "kid": "38826b17-6a30-5f9b-b169-8beb8202f723", "typ": "JWT",
+  "x5t": "ykNaY4qM_ta4k2TgZOCEYLkcYlA" }
+```
+
+Payload — 31 claims, every one a string except `exp`, `iat` and `nbf`:
+
+```json
+{
+  "actor": "bigdaz",
+  "actor_id": "179734",
+  "aud": "https://dv-self-paced-training.grdev.net",
+  "base_ref": "",
+  "check_run_id": "98234261885",
+  "event_name": "workflow_dispatch",
+  "exp": 1787760411,
+  "head_ref": "",
+  "iat": 1787760111,
+  "iss": "https://token.actions.githubusercontent.com",
+  "job_workflow_ref": "develocity-app-2/build-scan-oidc-publish/.github/workflows/probe-exchange.yml@refs/heads/main",
+  "job_workflow_sha": "4e3ed9244ed6259f32893b0ab8bb220d75849931",
+  "jti": "fa343339-0fe2-4efe-9398-9f6843527edf",
+  "nbf": 1787759811,
+  "ref": "refs/heads/main",
+  "ref_protected": "false",
+  "ref_type": "branch",
+  "repository": "develocity-app-2/build-scan-oidc-publish",
+  "repository_id": "1346406320",
+  "repository_owner": "develocity-app-2",
+  "repository_owner_id": "317448489",
+  "repository_visibility": "public",
+  "run_attempt": "1",
+  "run_id": "32986619568",
+  "run_number": "5",
+  "runner_environment": "github-hosted",
+  "sha": "4e3ed9244ed6259f32893b0ab8bb220d75849931",
+  "sub": "repo:develocity-app-2@317448489/build-scan-oidc-publish@1346406320:ref:refs/heads/main",
+  "workflow": "probe-exchange",
+  "workflow_ref": "develocity-app-2/build-scan-oidc-publish/.github/workflows/probe-exchange.yml@refs/heads/main",
+  "workflow_sha": "4e3ed9244ed6259f32893b0ab8bb220d75849931"
+}
+```
+
+Three things worth drawing out:
+
+- **Every identifier is a string**, including `repository_id`, `repository_owner_id`, `actor_id`,
+  `run_id` and `check_run_id`. All of them are therefore matchable. Even `ref_protected` is the
+  *string* `"false"` rather than a boolean.
+- **`sub` uses the new immutable format** — `repo:«owner»@«owner_id»/«repo»@«repo_id»:ref:«ref»` —
+  because this repository was created after 2026-07-15. A rule written against the older
+  `repo:owner/name:ref:...` shape would not match it, which is exactly why the docs say not to
+  scope on `sub`.
+- **There are useful claims outside the documented list**, all strings: `repository_visibility`,
+  `runner_environment` (`github-hosted` / `self-hosted`), `event_name`, `ref_protected`, `actor`.
+  `runner_environment` in particular could keep an entry from accepting self-hosted runners.
+
+`probe-exchange.yml` regenerates this on demand, so it does not need to be kept up to date by hand.
+
 
 The cross-check runs above used `repository` Contains `/`. `iss` Equals was confirmed separately
 and is the better choice for a production entry: it is the documented approach and states its
