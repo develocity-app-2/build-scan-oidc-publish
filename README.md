@@ -139,6 +139,11 @@ the server's specific response:
 | `forbidden` | `denied the request to publish the build scan` |
 | `no-project-id` | `rejected the request due to a project ID being required` |
 
+Each cell also appends its verdict to the run summary, so all six read side by side without
+opening individual jobs. The Gradle exit code is logged but deliberately not raised as an
+annotation: a refused publish still exits 0, so surfacing it next to a result invites reading it
+as one.
+
 Matching the *message* rather than merely the absence of a scan URL is deliberate. Absence of a
 URL is satisfied by any failure at all, so the looser check would let an unrelated breakage pass
 itself off as proof of isolation — which is precisely what happened during the episode described
