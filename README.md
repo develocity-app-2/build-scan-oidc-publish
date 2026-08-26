@@ -11,57 +11,39 @@ project-level access control and workload identity support).
 
 | | |
 | --- | --- |
-| Project-level access control | **verified**, in all three directions — under *access-key* authentication |
+| Project-level access control | **verified**, in all three directions |
 | OIDC token exchange | **working**: `POST /api/auth/token` returns a Develocity token |
-| OIDC end to end | **5 of 6 cells agree with the access key**; `forbidden` does not — see below |
+| OIDC end to end | **working**: all six cells pass, OIDC matching the access key exactly |
 
-`build.yml` runs both credentials side by side, so the contrast is visible in a single run
-([32915421249](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32915421249)):
+`build.yml` runs both credentials side by side, so the comparison is one run
+([32916347289](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32916347289)):
 
 | | `granted` | `forbidden` | `no-project-id` |
 | --- | --- | --- | --- |
-| **access-key** | publishes | **denied** | refused, project required |
-| **oidc** | publishes | **publishes** ⚠ | refused, project required |
+| **access-key** | publishes | denied | refused, project required |
+| **oidc** | publishes | denied | refused, project required |
 
-Five of six agree. The disagreement is the one that matters: a token minted through workload
-identity **published to a project its entry does not grant**, where the access key was denied for
-the identical build.
+**A token obtained through GitHub OIDC is constrained exactly as the equivalent access key is.**
+That is the result the repository exists to establish.
 
-## Open problem: the OIDC token is not scoped to its entry's projects
+## Resolved: the OIDC token was not scoped to its entry's projects
 
-`projects/forbidden` declares `projectId = build-scan-oidc-forbidden`. The workload identity
-entry grants only the project group `Group to publish with OIDC`, which contains only
-`build-scan-oidc-publish`. A token minted from that entry nevertheless published to the forbidden
-project: <https://dv-self-paced-training.grdev.net/s/qdh5jfqml7fsg>.
+*(Kept because it is the failure mode most worth knowing about.)*
 
-The same build, on the same commit and runner generation, is denied when authenticated with an
-access key whose user holds that same single project group:
+Once the exchange worked, a token minted through workload identity published to
+`build-scan-oidc-forbidden` — a project its entry's group does not contain — where an access key
+holding the same single project group was denied for the identical build.
 
-```
-The Develocity server denied the request to publish the build scan
-(used access key prefix 'bl7kgenhdrqgdpl7b667goafrs').
-```
+The cause was **extra roles left on the workload identity entry** while diagnosing the 401 below,
+at least one of which carried access beyond the entry's project group. Removing them made the
+cell pass. So the project group does constrain minted tokens; a broad role alongside it does not.
 
-So the difference is the credential, not the build, the project, or the grants.
-
-Two readings, and they need separating before this is called a defect:
-
-1. **The entry's roles are broader than its project group.** Roles were added to this entry while
-   diagnosing the 401 below and may not have been removed. A role carrying cross-project access
-   would explain it, and would make this a configuration artefact rather than a bug.
-2. **The project group is not constraining minted tokens.** If the entry's roles are all
-   project-scoped, then the project group is not being applied to the token, which is a defect in
-   workload identity.
-
-One observation bears on it: the same token *is* refused for `no-project-id`, with `a project ID
-being required`. So the token does not simply carry "access all data without an associated
-project" — it is scoped enough to be refused for unassociated data, yet not scoped to the granted
-project. Whatever it holds sits between those two.
-
-The exchange requests no `permissions` or `projectIds`, deliberately, so that the token carries
-exactly what the entry grants and nothing is narrowed by the request. Requesting
-`projectIds=build-scan-oidc-publish` explicitly would likely make `forbidden` pass, but it would
-be testing the request rather than the entry.
+Worth keeping for two reasons. It is the exact shape of a mis-scoped CI credential in the wild —
+the grant looks correct, and the extra capability arrives from a role sitting beside it. And one
+observation made it diagnosable: the same token was still refused for `no-project-id`, so it was
+not simply carrying "access all data without an associated project". It was scoped enough to be
+refused unassociated data, yet not scoped to the granted project, which pointed at a role rather
+than at a missing project restriction.
 
 ## Resolved: the exchange returning 401
 
@@ -192,21 +174,23 @@ itself off as proof of isolation — which is precisely what happened during the
 under **History** below. `forbidden` reports *inconclusive*, not success, when nothing publishes
 for an unaccounted reason.
 
-## Result: project-level access control
+## Result
 
-Verified under access-key authentication, most recently in run
-[32914559098](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32914559098):
+Run [32916347289](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32916347289),
+with the server's own response behind every cell:
 
-| Build | Server response | |
+| Credential | Build | Server response |
 | --- | --- | --- |
-| `granted` | published — `/s/k64nwe5eayei6` | PASS |
-| `forbidden` | `denied the request to publish the build scan (used access key prefix '…')` | PASS |
-| `no-project-id` | `rejected the request due to a project ID being required` | PASS |
+| access-key | `granted` | published — `/s/lbgm3t754lcmm` |
+| access-key | `forbidden` | `denied the request to publish the build scan` |
+| access-key | `no-project-id` | `rejected … due to a project ID being required` |
+| oidc | `granted` | published — `/s/376whfovt4vwe` |
+| oidc | `forbidden` | `denied the request to publish the build scan` |
+| oidc | `no-project-id` | `rejected … due to a project ID being required` |
 
-Access control holds in all three directions: the granted project publishes, the ungranted one is
-denied, and a build naming no project is refused outright. Re-confirming this **under OIDC** is
-blocked on the exchange above; nothing in the three builds needs to change for it, and the
-matrix will show it the moment the exchange succeeds.
+Project-level access control holds in all three directions, and holds identically whether the
+build authenticates with a stored access key or with a token exchanged from a GitHub OIDC token.
+No long-lived Develocity credential is needed in CI to get that property.
 
 ## How authentication works
 
