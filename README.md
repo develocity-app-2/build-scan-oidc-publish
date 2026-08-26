@@ -13,20 +13,23 @@ project-level access control and workload identity support).
 | --- | --- |
 | Project-level access control | **verified**, in all three directions |
 | OIDC token exchange | **working**: `POST /api/auth/token` returns a Develocity token |
-| OIDC end to end | **working**: all six cells pass, OIDC matching the access key exactly |
+| OIDC end to end | **working**: all eight cells pass, OIDC matching the access key exactly |
 | Dynamic project group allocation | **working**: verified on both the `repository` and `repository_id` claims |
 | One all-repositories entry | **working**: two repositories confined to their own projects by `repository_id` alone |
 
 `build.yml` runs both credentials side by side, so the comparison is one run
-([32916347289](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32916347289)):
+([32977842282](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32977842282)):
 
-| | `granted` | `forbidden` | `no-project-id` |
-| --- | --- | --- | --- |
-| **access-key** | publishes | denied | refused, project required |
-| **oidc** | publishes | denied | refused, project required |
+| | `granted` | `forbidden` | `foreign` | `no-project-id` |
+| --- | --- | --- | --- | --- |
+| **access-key** | publishes | denied | denied | refused, project required |
+| **oidc** | publishes | denied | denied | refused, project required |
 
 **A token obtained through GitHub OIDC is constrained exactly as the equivalent access key is.**
 That is the result the repository exists to establish.
+
+For the generalised design this led to — written without reference to this org or server, so it
+can be applied elsewhere — see [OIDC-PUBLISHING-DESIGN.md](OIDC-PUBLISHING-DESIGN.md).
 
 ## Resolved: the OIDC token was not scoped to its entry's projects
 
@@ -125,28 +128,21 @@ Issuer, audience and the `repository` requirement match the claims above exactly
   trailing-slash discrepancy — and `jwks_uri` serves 4 RSA/RS256 keys, the material the docs say
   Develocity requires.
 
-### What has not been tested
-
-- **Develocity's egress to the JWKS endpoint.** The docs give this its own troubleshooting
-  section because it produces exactly this symptom. **Test issuer** on the entry settles it.
-- **A global enable for workload identity**, separate from the entry, if this build has one.
-- **The server's own logs.** The docs point at WARN-level `WorkloadIdentityRegistry` messages,
-  which is where the actual reason will be and the one place black-box testing cannot reach.
-
 ## What the repository tests
 
-Three independent Gradle builds, byte-for-byte identical except for the `projectId` line:
+Four independent Gradle builds, byte-for-byte identical except for the `projectId` line:
 
 | Build | `projectId` | Expected outcome |
 | --- | --- | --- |
 | `projects/granted` | `build-scan-oidc-publish` | scan publishes |
 | `projects/forbidden` | `build-scan-oidc-forbidden` | publish denied |
+| `projects/foreign` | `github-app-demo-app` | publish denied — another repository's project |
 | `projects/no-project-id` | *(none)* | publish refused — a project is required |
 
 The negative cases are the point: a credential that can publish anywhere is not meaningfully
 scoped.
 
-`.github/workflows/build.yml` runs each of those under each credential — a six-cell matrix of
+`.github/workflows/build.yml` runs each of those under each credential — an eight-cell matrix of
 `credential × project`. Both arms share one job definition, so they run on the same commit and
 the same runner generation. That matters more than it sounds: runs minutes apart have already
 landed on different runner images carrying different Gradle versions, and a comparison split
@@ -163,9 +159,10 @@ the server's specific response:
 | --- | --- |
 | `granted` | a `grdev.net/s/…` scan URL appearing |
 | `forbidden` | `denied the request to publish the build scan` |
+| `foreign` | `denied the request to publish the build scan` |
 | `no-project-id` | `rejected the request due to a project ID being required` |
 
-Each cell also appends its verdict to the run summary, so all six read side by side without
+Each cell also appends its verdict to the run summary, so all eight read side by side without
 opening individual jobs. The Gradle exit code is logged but deliberately not raised as an
 annotation: a refused publish still exits 0, so surfacing it next to a result invites reading it
 as one.
@@ -178,19 +175,23 @@ for an unaccounted reason.
 
 ## Result
 
-Run [32916347289](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32916347289),
+Run [32977842282](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32977842282),
 with the server's own response behind every cell:
 
 | Credential | Build | Server response |
 | --- | --- | --- |
-| access-key | `granted` | published — `/s/lbgm3t754lcmm` |
+| access-key | `granted` | published — `/s/phybp6yqbtboi` |
 | access-key | `forbidden` | `denied the request to publish the build scan` |
+| access-key | `foreign` | `denied the request to publish the build scan` |
 | access-key | `no-project-id` | `rejected … due to a project ID being required` |
-| oidc | `granted` | published — `/s/376whfovt4vwe` |
+| oidc | `granted` | published — `/s/ok3ulrj2i3sti` |
 | oidc | `forbidden` | `denied the request to publish the build scan` |
+| oidc | `foreign` | `denied the request to publish the build scan` |
 | oidc | `no-project-id` | `rejected … due to a project ID being required` |
 
-Project-level access control holds in all three directions, and holds identically whether the
+Exactly two scans published across the run, one per credential, both to `build-scan-oidc-publish`.
+
+Project-level access control holds in all four directions, and holds identically whether the
 build authenticates with a stored access key or with a token exchanged from a GitHub OIDC token.
 No long-lived Develocity credential is needed in CI to get that property.
 
@@ -258,6 +259,37 @@ Each repository reaches its own project and is denied the other's, from a single
 names neither of them. The cross-check matters more than either direction alone: one repository
 publishing successfully proves the dynamic grant fires, and the *other* repository being denied
 the same project proves the grant is scoped rather than shared.
+
+The mirror half lived in a `workflow_dispatch` workflow in the other repository and was **removed
+once the result was recorded**, so that repository is back to its prior state. Reproducing it
+means recreating a build there that declares the other project's `projectId`.
+
+#### An unregistered repository gets a token that can do nothing
+
+The property that makes an all-repositories entry acceptable: authenticating is open to every
+repository on GitHub, but a repository with no matching project group holds no project groups and
+can publish nowhere.
+
+Tested from a repository in an unrelated GitHub account, with no project and no project group of
+its own:
+
+```
+repository = 'unrelated-account/some-repo'
+exchange                                  -> HTTP 200      (it can authenticate)
+publish to build-scan-oidc-publish        -> denied
+publish to its own, unregistered project  -> denied
+```
+
+No scan was published. So an unregistered repository authenticates successfully and is refused
+everywhere, which is the behaviour a self-service model depends on: registration is what grants
+capability, and until it happens the credential is inert.
+
+This covers **project-scoped** actions only, which is what publishing is. It says nothing about
+what else the entry's fixed role carries, and an all-repositories entry grants that role to every
+repository on GitHub. Any non-project-scoped permission in it — API data access, administration,
+"access all data without an associated project" — is held by any repository that asks. The role
+therefore has to be audited as a security boundary in its own right; no publishing test can do it
+for you.
 
 #### `aud` cannot be used as the claim requirement
 
