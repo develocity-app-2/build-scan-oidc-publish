@@ -26,11 +26,16 @@ jobs:
       fail-fast: false
       matrix:
         credential: [access-key, oidc]
-        project: [granted, forbidden, no-project-id]
+        project: [granted, forbidden, foreign, no-project-id]
         include:
           - project: granted
             expect: published
           - project: forbidden
+            expect: denied
+          # Another repository's project. Denial here is what makes the
+          # single all-repositories workload identity safe: authenticating is
+          # open to everyone, but each token reaches only its own project.
+          - project: foreign
             expect: denied
           - project: no-project-id
             expect: project-required
