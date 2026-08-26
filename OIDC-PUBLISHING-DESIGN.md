@@ -114,6 +114,9 @@ cannot both map to one group. One-to-many is fine — one value may grant severa
 
 Nothing else changes. The workload identity entry is untouched by onboarding, which is the point.
 
+The repository's *build* need not change either, if Develocity injection supplies the plugin and
+its configuration — see §4.2, including the one gap that currently blocks it.
+
 ## 4. The workflow side
 
 **The exchange belongs in the CI action, not in the workflow.** `gradle/actions/setup-gradle`
@@ -184,7 +187,52 @@ workflow author should implement it, but because the failure modes in §5 surfac
 and denial messages regardless of who makes the request, and because the same exchange is needed
 by anything that is not a Gradle build on GitHub Actions.
 
-### 4.2 What stays the workflow author's responsibility
+### 4.2 Newly connected repositories: Develocity injection
+
+The `settings.gradle.kts` shown above assumes the repository is already set up to publish. A
+repository being connected for the first time is not, and requiring a build-file change as part of
+onboarding defeats the point of self-service.
+
+`setup-gradle` already solves this with **Develocity injection**: it applies and configures the
+Develocity plugin from action inputs, for builds that do not reference it at all. The relevant
+inputs today are `develocity-injection-enabled`, `develocity-url`, `develocity-plugin-version`,
+`develocity-ccud-plugin-version`, `develocity-enforce-url`, `develocity-capture-file-fingerprints`
+and `develocity-allow-untrusted-server`.
+
+So a newly connected repository needs **no changes to its build at all**:
+
+```yaml
+- uses: gradle/actions/setup-gradle@v5
+  with:
+    develocity-injection-enabled: true
+    develocity-url: https://develocity.example.com
+    develocity-plugin-version: «latest»
+```
+
+with the OIDC exchange (§4.1) supplying the credential.
+
+**One gap.** Injection has no way to set the project id. There is no `develocity-project-id` input,
+and nothing in the action or its injection scripts handles one. Since a project id is *mandatory*
+once project-level access control is enforced — a build that names no project is refused outright
+(§5.4) — injection as it stands cannot connect a repository to a project. Closing that is the one
+enhancement this design depends on.
+
+Whatever form it takes, the plugin already accepts the value three ways, so the injection script
+has options that need no plugin change: the `develocity.projectId` system property, the
+`DEVELOCITY_PROJECT_ID` environment variable, or setting `develocity.projectId` directly in the
+injected configuration.
+
+Two consequences for the design:
+
+- **Which project a repository belongs to becomes workflow configuration**, not build
+  configuration. That suits automated onboarding: the registrant knows the project id when it
+  creates the project, and can emit it into the workflow rather than into a build file it would
+  otherwise have to modify by pull request.
+- **The build-file route from §4 remains valid** and is the better fit for a repository that
+  already publishes, or one that wants the value under version control alongside its build logic.
+  Both paths end in the same place; injection simply removes the file change from onboarding.
+
+### 4.3 What stays the workflow author's responsibility
 
 Even with the action doing the exchange, three things cannot move into it:
 
@@ -193,10 +241,11 @@ Even with the action doing the exchange, three things cannot move into it:
 - **The audience matching the entry.** One shared entry means one audience value. GitHub defaults
   the audience to the repository owner URL, which will not match a server-URL audience, so the
   value has to be passed explicitly and has to agree with the entry.
-- **`projectId` in the build.** The action cannot know which project a repository belongs to.
-  Without it the publish is refused outright (§5.4).
+- **The project id.** The action cannot infer which project a repository belongs to, so the value
+  has to be supplied — in the build, or through injection once that can carry it (§4.2). Without
+  it the publish is refused outright (§5.4).
 
-### 4.3 Doing the exchange by hand
+### 4.4 Doing the exchange by hand
 
 Needed only when nothing does it for you — a non-Gradle build, another CI system, or reproducing a
 failure in isolation:
@@ -310,7 +359,7 @@ Both directions mislead. A missing prefix makes a working exchange look like a p
 A present prefix makes the exchange endpoint look broken.
 
 `setup-gradle` already handles this — it parses and produces the host-qualified form — so this
-only bites hand-rolled exchanges (§4.3) and scripts talking to the REST API directly.
+only bites hand-rolled exchanges (§4.4) and scripts talking to the REST API directly.
 
 ### 5.4 A refused publish does not fail the build
 
@@ -323,6 +372,9 @@ must assert on the server's message, and specifically:
 | allowed | a scan URL is printed |
 | no access to the named project | `denied the request to publish the build scan` |
 | no project named, and unassociated data disallowed | `rejected the request due to a project ID being required` |
+
+Note the third row is why a project id cannot be optional: a connected repository must name its
+project somewhere, either in its build or via injection (§4.2).
 
 Asserting merely that *no scan URL appeared* is not enough — that is satisfied by any failure at
 all, including a broken credential, a misconfigured entry, or a compile error. A test written that
@@ -386,8 +438,11 @@ Requirements on the registrant:
   never a bare repository name, which anybody could create under their own account and match.
 - **Record the human-readable name** in the group's display name or description, since the mapping
   value alone is opaque.
-- **Emit the workflow snippet**, including the explicit audience. A repository that takes GitHub's
-  default audience will not match the entry.
+- **Emit the workflow snippet**, including the explicit audience and the project id. A repository
+  that takes GitHub's default audience will not match the entry. Using Develocity injection (§4.2)
+  keeps this to a workflow file and avoids touching the repository's build logic — which matters
+  for onboarding, since a build-file change means opening a pull request against a repository the
+  registrant does not own and waiting for somebody to merge it.
 - **Treat the registrant's own Develocity credential as the most sensitive thing in the system.**
   Creating projects requires the *Configure projects* permission, so the registrant holds a
   long-lived administrative key — somewhat against the spirit of removing long-lived keys from CI.
@@ -399,6 +454,7 @@ Behaviour as repositories arrive:
 | registered, mapping matches | publishes to its own project, denied every other |
 | authenticated but **not** registered | token issued, holds no project groups, publishes nowhere |
 | registered but build names no project | refused: *a project ID being required* |
+| registered, build does not reference Develocity at all | publishes, if injection supplies the plugin **and** the project id |
 | never registered, unrelated account | token issued, publishes nowhere |
 
 Registration is what grants capability. Until it happens the credential is inert, which is what
