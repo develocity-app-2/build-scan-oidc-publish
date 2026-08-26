@@ -7,9 +7,10 @@ rootProject.name = "no-project-id"
 develocity {
     server = "https://dv-self-paced-training.grdev.net"
 
-    // The control case: deliberately no projectId. Identical to the other two
-    // builds in every other respect, so a difference in outcome is attributable
-    // to the project ID and nothing else.
+    // Deliberately no projectId. With project-level access control enforcing
+    // and unassociated data disallowed, the server is expected to refuse this
+    // build for naming no project. Identical to the other two builds otherwise,
+    // so any difference in outcome is attributable to the project ID alone.
 
     buildScan {
         publishing.onlyIf { true }

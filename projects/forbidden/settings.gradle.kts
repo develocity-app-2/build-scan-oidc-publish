@@ -7,8 +7,8 @@ rootProject.name = "forbidden"
 develocity {
     server = "https://dv-self-paced-training.grdev.net"
 
-    // The whole experiment turns on this value: the credential is granted
-    // access to "build-scan-oidc-publish" and nothing else.
+    // The credential has no access to this project, so the server is expected
+    // to deny the publish. This is the negative case the experiment exists for.
     projectId = "build-scan-oidc-forbidden"
 
     buildScan {

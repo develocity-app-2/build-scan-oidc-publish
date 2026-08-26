@@ -73,10 +73,14 @@ runs:
           echo "Exchange failed with HTTP $code. Develocity returned:"
           echo "  $dv"
           echo
-          echo "401/403 here means no workload identity entry matched the claims"
-          echo "above. The usual cause is the Audience: this workflow requests"
-          echo "'${{ inputs.audience }}', and the entry must carry that exact value"
-          echo "rather than GitHub's default of the repository owner URL."
+          echo "401 here means Develocity did not accept the OIDC token. Compare"
+          echo "the claims above against the workload identity entry's Issuer,"
+          echo "Audience and claim requirements."
+          echo
+          echo "Note this is currently a known, unresolved failure on this server"
+          echo "even with an entry that matches exactly -- see the README's"
+          echo "'Open problem' section, and probe-exchange.yml to reproduce it"
+          echo "alongside an access key, which succeeds against this endpoint."
           exit 1
         fi
         echo "::add-mask::$dv"

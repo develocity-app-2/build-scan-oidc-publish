@@ -1,6 +1,10 @@
-# Throwaway. Sends the same exchange request twice -- once bearing the old
-# access key, once bearing this job's OIDC token -- to tell a malformed request
-# apart from an OIDC token that is not matching any workload identity entry.
+# Minimal reproduction for the OIDC exchange returning 401. Sends the same
+# request to /api/auth/token twice -- once bearing an access key, once bearing
+# this job's OIDC token -- so a malformed request can be told apart from a token
+# Develocity will not accept. The access key arm returns 200, the OIDC arm 401.
+#
+# Requires the DEVELOCITY_ACCESS_KEY secret, which nothing else here reads any
+# more; delete this workflow along with the secret once the exchange works.
 name: probe-exchange
 
 on:

@@ -1,214 +1,232 @@
 # build-scan-oidc-publish
 
 An experiment in publishing Gradle Build Scans to Develocity from GitHub Actions, authenticating
-with a **GitHub OIDC token** instead of a long-lived access key.
+with a **GitHub OIDC token** instead of a long-lived access key, and checking that project-level
+access control constrains what that credential can publish.
 
-Develocity server: <https://dv-self-paced-training.grdev.net>
+Develocity server: <https://dv-self-paced-training.grdev.net> (unreleased build, with
+project-level access control and workload identity support).
 
-## What this repository is currently testing
+## Status
 
-That project-level access control actually constrains what a CI credential can publish:
+| | |
+| --- | --- |
+| Project-level access control | **verified**, in all three directions — but under *access-key* authentication |
+| OIDC token exchange | **blocked**: `POST /api/auth/token` returns HTTP 401 for a GitHub OIDC token |
+| Workflow side of OIDC | done; token is minted with correct claims and presented correctly |
 
-- the workflow **can** publish a Build Scan to the project it has been granted, and
-- the workflow **cannot** publish a Build Scan to a project it has not been granted.
+Because the exchange fails, every job in `build.yml` currently fails at its first step. The
+access-control result below was established before the switch to OIDC and has not yet been
+re-confirmed under it.
 
-The second half is the one that matters. A credential that can publish anywhere is not
-meaningfully scoped, so the negative case is the real test. Both hold — see **Result** below.
+## Open problem: the OIDC exchange is rejected
 
-### Layout
+`POST /api/auth/token` returns **401** when presented with a GitHub Actions OIDC token, and
+**200** when presented with an access key — same endpoint, same headers, same job, seconds apart:
 
-Two independent Gradle builds, byte-for-byte identical except for one line:
+```
+== access key, /api/auth/token ==
+  access key -> HTTP 200
+     body length 1196
+== access key, /api/builds ==
+  /api/builds -> HTTP 200
+== OIDC token, /api/auth/token ==
+  oidc -> HTTP 401
+     body: {"status":401,"type":"urn:gradle:develocity:api:problems:client-error",
+            "title":"Something was wrong with the request."}
+```
+
+Reproduce with `.github/workflows/probe-exchange.yml` (`workflow_dispatch`), which runs exactly
+that comparison. Latest run:
+[32913917417](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32913917417).
+
+### The request
+
+```
+POST https://dv-self-paced-training.grdev.net/api/auth/token?expiresInHours=1
+Content-Type: application/json
+Authorization: Bearer <github oidc jwt>
+(empty body)
+```
+
+Headers and empty body match `gradle/actions`' own `ShortLivedTokenClient`
+(`sources/src/develocity/short-lived-token.ts`), which is the only reference implementation of
+this endpoint — `gradle/actions` does not implement the OIDC path at all, so the shape is
+extrapolated from its access-key path. That same shape returns 200 with an access key.
+
+### The token's claims
+
+Decoded in-job from the token actually sent:
+
+```
+iss              = https://token.actions.githubusercontent.com
+aud              = https://dv-self-paced-training.grdev.net
+repository       = develocity-app-2/build-scan-oidc-publish
+repository_owner = develocity-app-2
+ref              = refs/heads/main
+workflow_ref     = develocity-app-2/build-scan-oidc-publish/.github/workflows/build.yml@refs/heads/main
+```
+
+### The workload identity entry
+
+| Field | Value |
+| --- | --- |
+| ID | `build-scan-oidc-publish-id` |
+| Issuer | `https://token.actions.githubusercontent.com` |
+| Audience | `https://dv-self-paced-training.grdev.net` |
+| Claim requirement | `repository` **Equals** `develocity-app-2/build-scan-oidc-publish` |
+| Assigned project groups | `Group to publish with OIDC` |
+
+Issuer, audience and the `repository` requirement match the claims above exactly.
+
+### What has been eliminated
+
+- **The request shape.** The identical request with an access key returns 200 from the same
+  endpoint in the same job.
+- **The entry's field values.** Verified against the admin UI; they match the claims verbatim.
+- **The token.** A real JWT that decodes, with the correct `aud` and `repository`.
+- **Authorization.** Additional roles were assigned to the entry with no change, which is
+  consistent with 401 being authentication. A grants problem would instead yield a token that
+  failed later, at publish time, with the denial message this repository already knows.
+- **GitHub's issuer.** The discovery document self-reports
+  `issuer = 'https://token.actions.githubusercontent.com'` — byte-identical to the entry, no
+  trailing-slash discrepancy — and `jwks_uri` serves 4 RSA/RS256 keys, the material the docs say
+  Develocity requires.
+
+### What has not been tested
+
+- **Develocity's egress to the JWKS endpoint.** The docs give this its own troubleshooting
+  section because it produces exactly this symptom. **Test issuer** on the entry settles it.
+- **A global enable for workload identity**, separate from the entry, if this build has one.
+- **The server's own logs.** The docs point at WARN-level `WorkloadIdentityRegistry` messages,
+  which is where the actual reason will be and the one place black-box testing cannot reach.
+
+## What the repository tests
+
+Three independent Gradle builds, byte-for-byte identical except for the `projectId` line:
 
 | Build | `projectId` | Expected outcome |
 | --- | --- | --- |
 | `projects/granted` | `build-scan-oidc-publish` | scan publishes |
-| `projects/forbidden` | `build-scan-oidc-forbidden` | publish rejected |
-| `projects/no-project-id` | *(none)* | scan publishes |
+| `projects/forbidden` | `build-scan-oidc-forbidden` | publish denied |
+| `projects/no-project-id` | *(none)* | publish refused — a project is required |
 
-`.github/workflows/build.yml` runs each as a separate job and asserts on the outcome.
+`.github/workflows/build.yml` runs each as a separate job. The negative cases are the point: a
+credential that can publish anywhere is not meaningfully scoped.
 
-The third build is a control, and it discriminates between the readings of a failure:
+### Why the assertions match on the message
 
-- If it publishes while the other two do not, the fault is specific to the **project ID path**.
-- If it also fails, either publishing is broken outright or **Allow data without an associated
-  project** is now unchecked, since enforcement is on.
-- If it reports the *project ID* error despite setting none, the plugin is sending an empty
-  project ID unconditionally — which would explain every observation above.
+A refused publish **does not fail the Gradle build** — the plugin prints a warning and the build
+still reports `BUILD SUCCESSFUL`, so the exit code carries no signal. Each job therefore matches
+the server's specific response:
 
-### Why the assertions grep the log
+| Job | Passes on |
+| --- | --- |
+| `granted` | a `grdev.net/s/…` scan URL appearing |
+| `forbidden` | `denied the request to publish the build scan` |
+| `no-project-id` | `rejected the request due to a project ID being required` |
 
-A rejected publish **does not fail the Gradle build** — the plugin prints a warning and the
-build still reports `BUILD SUCCESSFUL`. So the exit code proves nothing, and each job asserts
-on whether a scan URL was emitted:
+Matching the *message* rather than merely the absence of a scan URL is deliberate. Absence of a
+URL is satisfied by any failure at all, so the looser check would let an unrelated breakage pass
+itself off as proof of isolation — which is precisely what happened during the episode described
+under **History** below. `forbidden` reports *inconclusive*, not success, when nothing publishes
+for an unaccounted reason.
 
-- `granted` fails if no `grdev.net/s/…` URL appears.
-- `forbidden` fails if one *does*.
+## Result: project-level access control
 
-## Develocity-side setup
+Verified under access-key authentication, run
+[32885817215](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32885817215):
 
-This half cannot be automated from here — it needs a signed-in user with the
-**Configure projects** permission. In **Administration → Access control → Projects**:
-
-1. **Add project** with Project ID `build-scan-oidc-publish`.
-2. **Add project** with Project ID `build-scan-oidc-forbidden`.
-3. Create a project group containing **only** `build-scan-oidc-publish`, and assign it to the
-   user whose access key is in the `DEVELOCITY_ACCESS_KEY` secret.
-4. Make sure that user has **no** route to `build-scan-oidc-forbidden` — not via another project
-   group, and not via a permission that reads across projects regardless.
-5. Check **Enable project-level access control**, and save.
-
-> [!WARNING]
-> Develocity **cannot delete projects**. Both IDs above are permanent on this server once
-> created, so change them in the two `settings.gradle.kts` files first if you want different
-> names.
-
-One thing to keep in mind if this is ever rebuilt: **if the credential's user has broad access**,
-the `forbidden` publish will succeed and the experiment measures nothing. The user must be scoped
-to a project group containing only the granted project.
-
-## Status
-
-- Project-level access control: **working and verified**, in all three directions above.
-- OIDC: workflow side **done and verified** as far as it can be — the token is minted with the
-  right claims and the exchange request matches `gradle/actions`' own client for this endpoint.
-  The exchange currently returns **HTTP 401**, which is a *token-matching* failure: no workload
-  identity entry matched the claims. Grants are not involved — a matching entry with insufficient
-  roles would return a token and fail later, at publish time.
-- The `DEVELOCITY_ACCESS_KEY` repository secret is **no longer read** and can be deleted.
-
-## Result
-
-Project-level access control does constrain what this credential can publish. Run
-[32885373656](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32885373656)
-and later:
-
-| Build | `projectId` | Outcome |
+| Build | Server response | |
 | --- | --- | --- |
-| `projects/granted` | `build-scan-oidc-publish` | publishes |
-| `projects/forbidden` | `build-scan-oidc-forbidden` | `denied the request to publish the build scan` |
-| `projects/no-project-id` | *(none)* | `rejected the request due to a project ID being required` |
+| `granted` | published — `/s/vlm4gqyo3f4ds` | PASS |
+| `forbidden` | `denied the request to publish the build scan (used access key prefix '…')` | PASS |
+| `no-project-id` | `rejected the request due to a project ID being required` | PASS |
 
-All three are asserted on the specific message, not merely on the absence of a scan URL. That
-distinction matters: requiring the denial text is what stops an unrelated failure from passing
-itself off as proof of isolation.
+Access control holds in all three directions: the granted project publishes, the ungranted one is
+denied, and a build naming no project is refused outright. Re-confirming this under OIDC is
+blocked on the exchange above; nothing in the three builds needs to change for it.
 
-The third build began life as a control for the investigation below, and has become the third
-leg of the result: with enforcement on and unassociated data disallowed, a build that names no
-project is refused outright.
+## How authentication works
 
-## How this was made to work
+There is no stored Develocity credential in the build jobs. Each mints an OIDC token describing
+itself and trades it for a short-lived Develocity access token:
+
+1. `permissions: id-token: write` lets the job ask GitHub for an OIDC token. It lasts about five
+   minutes — too short to survive a build, which is why it is exchanged rather than used
+   directly.
+2. `.github/actions/develocity-token` posts it to `/api/auth/token` as a bearer credential and
+   receives a Develocity access token valid for an hour.
+3. That token is exported as `DEVELOCITY_ACCESS_KEY`, so the build authenticates exactly as it
+   did under a static key. Nothing in the three builds changed.
+
+The exchange **deliberately requests no `permissions` or `projectIds`**. The returned token then
+carries precisely what the matching workload identity entry grants, which is the thing under
+test; narrowing the request would test the request instead. The endpoint cannot mint a token with
+more access than the credential presenting it, so the entry's grants are the ceiling.
+
+The action logs the claims Develocity matches on. Tokens are masked; claims are not secret, and
+are the first thing to check when an entry does not match.
+
+### Configuring the Develocity side
+
+**Administration → Access control → Workload identity → Add**, with the values in the table
+above. Points that cost time:
+
+- **Audience must match** what the workflow requests. This workflow passes the server URL
+  explicitly rather than taking GitHub's default of the repository owner URL
+  (`https://github.com/develocity-app-2`), so the entry must carry the server URL.
+- **At least one claim requirement is mandatory.** An entry with none never matches any token.
+- **Roles are not inherited from any user.** The workload identity is its own principal and needs
+  a publish-capable role in its own right; `testuser`'s roles do not apply to it. This is easy to
+  miss, since the access key inherited its permissions from a user and this does not.
+- **The project groups are what make the experiment work.** `Group to publish with OIDC` contains
+  only `build-scan-oidc-publish`, so the token can publish there and nowhere else — which is what
+  `forbidden` and `no-project-id` assert.
+- **Test issuer** confirms Develocity can reach GitHub's JWKS endpoint. If that egress breaks
+  later, validation keeps working for 24 hours on cached keys and then fails.
+
+Scoping on `repository` pins this to one repository. Tightening to a branch or workflow file is
+possible with `ref` or `workflow_ref`, but **Starts With is a literal prefix check**, so
+`repository` Starts With `develocity-app-2/build-scan-oidc-publish` would also match a `-fork`
+repository. Equals avoids it. Do not scope on `sub`, whose format changed for repositories
+created after 2026-07-15 — which includes this one.
+
+## History: the project ID red herring
 
 For most of a day every project ID was rejected with `The project ID should be a non empty string
 of 256 chars maximum`, whatever the build did. The cause was **an experimental setting enabled on
-this Develocity instance**, since unset. Worth keeping, because the elimination was the useful
-part:
+this Develocity instance**, since unset. The elimination is worth keeping:
 
 - Not the ID's value or shape — an existing short alphanumeric project ID failed the same way as
   the hyphenated ones and as a non-existent one.
 - Not the mechanism — programmatic `projectId` and `-Ddevelocity.projectId` behaved identically.
 - Not the plugin version — 4.0.3, 4.4.3 and 4.5.0 all failed, and 4.0.3 emitted the *identical*
-  sentence despite being a different plugin generation. A string that survives three generations
+  sentence despite being a different plugin generation. A string surviving three generations
   verbatim comes from the server.
-- Not the project or the grants — both were verified in the admin UI.
+- Not the project or the grants — both verified in the admin UI.
 - Not the credential's permissions — the same key published fine with no project ID at all.
 - Not local validation — with no access key the build failed earlier, on authentication, and
   never mentioned the project ID.
 
-Two things carried their weight here. The **control build** localised the fault to the project ID
-path specifically. And the `forbidden` job was written to report *inconclusive* rather than pass
-when nothing published for the wrong reason — without that, this whole period would have shown a
-green `forbidden` and looked like proof that isolation worked, while proving nothing.
-
-## Authentication: GitHub OIDC
-
-There is no stored Develocity credential. Each job mints an OIDC token describing itself and
-trades it for a short-lived Develocity access token:
-
-1. `permissions: id-token: write` lets the job ask GitHub for an OIDC token. It lasts about five
-   minutes -- too short to survive a build, which is why it is exchanged rather than used
-   directly.
-2. `.github/actions/develocity-token` posts that token to `/api/auth/token` as a bearer
-   credential and receives a Develocity access token valid for an hour.
-3. That token is exported as `DEVELOCITY_ACCESS_KEY`, so the build authenticates exactly as it
-   did before. Nothing in the three builds changed.
-
-The exchange **deliberately requests no `permissions` or `projectIds`**. The returned token
-carries precisely what the matching workload identity entry grants, which is the thing under
-test; narrowing the request would test the request instead. The endpoint cannot mint a token with
-more access than the credential presenting it, so the entry's grants are the ceiling.
-
-The action logs the claims Develocity matches on (`iss`, `aud`, `repository`, `repository_owner`,
-`ref`, `workflow_ref`). The tokens themselves are masked; the claims are not secret, and they are
-the first thing to check when an entry does not match.
-
-### Claims this workflow actually presents
-
-Measured from run
-[32909709401](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32909709401),
-not assumed:
-
-```
-iss              = 'https://token.actions.githubusercontent.com'
-aud              = 'https://dv-self-paced-training.grdev.net'
-repository       = 'develocity-app-2/build-scan-oidc-publish'
-repository_owner = 'develocity-app-2'
-ref              = 'refs/heads/main'
-workflow_ref     = 'develocity-app-2/build-scan-oidc-publish/.github/workflows/build.yml@refs/heads/main'
-```
-
-Until a matching entry exists, the exchange fails and every job fails with:
-
-```
-curl: (22) The requested URL returned error: 401
-Exchange failed. Develocity returned: {"status":401,...,"title":"Something was wrong with the request."}
-```
-
-That 401 is the expected state before configuration, and it is the whole of what is outstanding:
-the workflow mints the token and presents it correctly.
-
-### Develocity configuration
-
-In **Administration -> Access control -> Workload identity**, select **Add**:
-
-| Field | Value |
-| --- | --- |
-| Name | `build-scan-oidc-publish GitHub Actions` |
-| Issuer | `https://token.actions.githubusercontent.com` |
-| Audience | `https://dv-self-paced-training.grdev.net` |
-| Claim requirement | `repository` **Equals** `develocity-app-2/build-scan-oidc-publish` |
-| Assigned roles | a role carrying permission to publish a Build Scan |
-| Assigned project groups | `Group to publish with OIDC` |
-
-Notes that matter:
-
-- **The Audience must match** the `audience` the workflow requests, which is the server URL
-  above. GitHub defaults the audience to the repository owner URL when none is passed; this
-  workflow passes one explicitly, so the entry must carry the same value.
-- **At least one claim requirement is required.** An entry with none never matches any token.
-- **Assigned roles are not inherited from any user.** The workload identity is its own principal,
-  so it needs a role granting scan publication in its own right -- `testuser`'s roles do not
-  apply to it.
-- **The project groups are what make the experiment work.** `Group to publish with OIDC` contains
-  only `build-scan-oidc-publish`, so the token can publish there and nowhere else -- which is
-  what `forbidden` and `no-project-id` assert.
-- Use **Test** on the entry to confirm Develocity can reach GitHub's JWKS endpoint before saving.
-  Develocity fetches `https://token.actions.githubusercontent.com/.well-known/openid-configuration`
-  and the `jwks_uri` from it; if that egress is blocked, token validation fails after 24 hours of
-  failed refreshes even once it is working.
-
-Scoping on `repository` pins this to one repository. Tightening further to a branch or workflow
-file is possible with `ref` or `workflow_ref`, but note the docs' warning: **Starts With is a
-literal prefix check**, so `repository` Starts With `develocity-app-2/build-scan-oidc-publish`
-would also match a `-fork` repository. Equals avoids the issue entirely. Do not scope on `sub`,
-whose format changed for repositories created after 2026-07-15.
+The `no-project-id` build began as a control for this, and localised the fault to the project ID
+path specifically. It is now the third leg of the result rather than a control.
 
 ## Running locally
 
-Each build is run from its own directory:
+Each build runs from its own directory:
 
 ```
 cd projects/granted && gradle build
 ```
 
-There is no wrapper, so this uses whatever Gradle is on your `PATH`. Publishing will be rejected
-until the machine has an access key for the server.
+There is no wrapper, so this uses whatever Gradle is on your `PATH`; CI uses the runner's
+preinstalled Gradle. Publishing is refused until the machine has an access key for the server.
+
+## A note on the access key format
+
+`DEVELOCITY_ACCESS_KEY` accepts the `«host»=«key»` form, which build tools parse to avoid sending
+a key to the wrong server. The REST API does not: `Authorization: Bearer` takes the bare key, and
+the host-qualified form is rejected as one malformed token with a 401 indistinguishable from the
+OIDC failure above. `probe-exchange.yml` strips the prefix for this reason. The build jobs are
+unaffected, as they hand the value to the Gradle plugin, which understands both forms.
