@@ -8,6 +8,13 @@ Everything here was established by running it against a Develocity server with p
 access control and workload identity, and is written with placeholder names so it can be applied
 to a new deployment.
 
+**The token exchange is a CI-action concern, not a per-project one.** `gradle/actions/setup-gradle`
+already exchanges a Develocity access key for a short-lived token against the same endpoint, so
+OIDC support there is a change of credential rather than a new mechanism (§4.1). The exchange is
+described in full below because its failure modes are visible to whoever is debugging them, and
+because anything that is not a Gradle build on GitHub Actions has to perform it itself — not
+because a workflow author should be writing it.
+
 Placeholders used throughout:
 
 | Placeholder | Meaning |
@@ -43,7 +50,8 @@ Gradle build publishes a Build Scan to «project-id»
   └─ allowed only if the token holds a project group containing «project-id»
 ```
 
-Three separate decisions, easy to conflate:
+Steps 1 and 2 are the CI action's job, not the workflow author's — see §4. The three decisions
+below are worth separating regardless of who makes the request, because each fails differently:
 
 1. **Can this workload authenticate at all?** Decided by the entry's issuer, audience and claim
    requirements. Failure is `HTTP 401` from `/api/auth/token`.
@@ -108,10 +116,14 @@ Nothing else changes. The workload identity entry is untouched by onboarding, wh
 
 ## 4. The workflow side
 
+**The exchange belongs in the CI action, not in the workflow.** `gradle/actions/setup-gradle`
+already owns the equivalent step for access keys, so the intended end state is that a workflow
+never mentions tokens at all:
+
 ```yaml
 permissions:
   contents: read
-  id-token: write        # without this there is no OIDC token to exchange
+  id-token: write        # without this there is no OIDC token to mint
 
 jobs:
   build:
@@ -119,33 +131,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Exchange an OIDC token for a Develocity token
-        env:
-          DV: https://develocity.example.com
-        run: |
-          set -euo pipefail
-
-          # 1. GitHub issues a token describing this job. It lasts ~5 minutes,
-          #    which is why it is exchanged rather than used directly.
-          oidc=$(curl -sS --fail-with-body \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${DV}" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
-          echo "::add-mask::$oidc"
-
-          # 2. Exchange it. Requesting no permissions or projectIds means the
-          #    token carries exactly what the matching entry grants.
-          code=$(curl -sS -o /tmp/tok -w '%{http_code}' -X POST \
-            "$DV/api/auth/token?expiresInHours=1" \
-            -H 'Content-Type: application/json' \
-            -H "Authorization: Bearer $oidc" --data '')
-          [ "$code" = "200" ] || { echo "exchange failed: $code $(cat /tmp/tok)"; exit 1; }
-          tok=$(cat /tmp/tok)
-          echo "::add-mask::$tok"
-
-          # 3. The Gradle plugin requires the host-qualified form (see §5.3).
-          host="${DV#*://}"
-          echo "DEVELOCITY_ACCESS_KEY=${host}=${tok}" >> "$GITHUB_ENV"
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          develocity-url: https://develocity.example.com
+          # no develocity-access-key: the action mints and exchanges an OIDC
+          # token instead, and the audience must match the entry's Audience
 
       - run: ./gradlew build
 ```
@@ -168,14 +158,76 @@ develocity {
 }
 ```
 
-Notes:
+### 4.1 Why this is a small change to the action
 
-- **Request the audience explicitly.** One shared entry means one audience value, and GitHub's
-  default is the repository owner URL, which will not match.
+`setup-gradle` already performs a credential-for-short-lived-token exchange against **the same
+endpoint**. It exposes `develocity-access-key` and `develocity-token-expiry`, and its
+`ShortLivedTokenClient` posts to `/api/auth/token?expiresInHours=…` with
+`Authorization: Bearer «credential»`, `Content-Type: application/json` and an empty body, with
+retries.
+
+So the OIDC flow is not a new mechanism, it is a different bearer credential presented to
+machinery that already exists:
+
+| Step | Today (access key) | With OIDC |
+| --- | --- | --- |
+| Obtain a credential | read a secret | `core.getIDToken(«audience»)` |
+| Exchange it | `POST /api/auth/token`, bearer = access key | identical, bearer = the OIDC token |
+| Hand it to the build | set `DEVELOCITY_ACCESS_KEY` | unchanged |
+
+What the action needs to add is the first row plus an input for the audience. Everything else —
+the request shape, the retries, masking, and the `«host»=«key»` formatting the Gradle plugin
+demands (§5.3) — it already does.
+
+The rest of this document deliberately describes the exchange in full anyway. Not because a
+workflow author should implement it, but because the failure modes in §5 surface as opaque `401`s
+and denial messages regardless of who makes the request, and because the same exchange is needed
+by anything that is not a Gradle build on GitHub Actions.
+
+### 4.2 What stays the workflow author's responsibility
+
+Even with the action doing the exchange, three things cannot move into it:
+
+- **`id-token: write`.** Without it there is no OIDC token to mint, and the job fails before
+  reaching Develocity. It is deliberately not granted by default.
+- **The audience matching the entry.** One shared entry means one audience value. GitHub defaults
+  the audience to the repository owner URL, which will not match a server-URL audience, so the
+  value has to be passed explicitly and has to agree with the entry.
+- **`projectId` in the build.** The action cannot know which project a repository belongs to.
+  Without it the publish is refused outright (§5.4).
+
+### 4.3 Doing the exchange by hand
+
+Needed only when nothing does it for you — a non-Gradle build, another CI system, or reproducing a
+failure in isolation:
+
+```bash
+# 1. GitHub issues a token describing this job. It lasts ~5 minutes, which is
+#    why it is exchanged rather than used directly.
+oidc=$(curl -sS --fail-with-body \
+  -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://develocity.example.com" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+echo "::add-mask::$oidc"
+
+# 2. Exchange it. Requesting no permissions or projectIds means the token
+#    carries exactly what the matching entry grants.
+code=$(curl -sS -o /tmp/tok -w '%{http_code}' -X POST \
+  "https://develocity.example.com/api/auth/token?expiresInHours=1" \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $oidc" --data '')
+[ "$code" = "200" ] || { echo "exchange failed: $code $(cat /tmp/tok)"; exit 1; }
+tok=$(cat /tmp/tok)
+echo "::add-mask::$tok"
+
+# 3. The Gradle plugin requires the host-qualified form (§5.3).
+echo "DEVELOCITY_ACCESS_KEY=develocity.example.com=${tok}" >> "$GITHUB_ENV"
+```
+
 - **Do not narrow the exchange.** `/api/auth/token` accepts `permissions` and `projectIds`
-  parameters. Passing them makes the request the thing under test rather than the entry's grants,
-  and cannot increase access — the endpoint refuses to mint a token exceeding the credential
-  presenting it. Omit them and let the entry decide.
+  parameters. Passing them makes the request, rather than the entry's grants, the thing that
+  decides access — and cannot increase it, since the endpoint refuses to mint a token exceeding
+  the credential presenting it. Omit them and let the entry decide.
 - **Mask both tokens.** Neither should reach a log.
 
 ## 5. Pitfalls
@@ -256,6 +308,9 @@ presenting a stored access key to the API must **strip** it.
 
 Both directions mislead. A missing prefix makes a working exchange look like a publishing failure.
 A present prefix makes the exchange endpoint look broken.
+
+`setup-gradle` already handles this — it parses and produces the host-qualified form — so this
+only bites hand-rolled exchanges (§4.3) and scripts talking to the REST API directly.
 
 ### 5.4 A refused publish does not fail the build
 
