@@ -14,7 +14,7 @@ project-level access control and workload identity support).
 | Project-level access control | **verified**, in all three directions |
 | OIDC token exchange | **working**: `POST /api/auth/token` returns a Develocity token |
 | OIDC end to end | **working**: all six cells pass, OIDC matching the access key exactly |
-| Dynamic project group allocation | **working**: groups granted from the token's `repository` claim |
+| Dynamic project group allocation | **working**: verified on both the `repository` and `repository_id` claims |
 
 `build.yml` runs both credentials side by side, so the comparison is one run
 ([32916347289](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32916347289)):
@@ -199,13 +199,15 @@ The entry does not have to name its project groups. Develocity can read a **clai
 and grant whichever project groups carry a matching mapping value, which lets one entry serve a
 whole organisation.
 
-Configured here as:
+Two claims were verified as the grant key, in separate runs:
 
-| Where | Setting | Value |
+| Project groups claim | Project group's IdP mapping | Result |
 | --- | --- | --- |
-| Workload identity entry | Assigned project groups | *(cleared)* |
-| Workload identity entry | Project groups claim | `repository` |
-| Project group `build-scan-oidc-publish-group` | Identity provider mapping | `develocity-app-2/build-scan-oidc-publish` |
+| `repository` | `develocity-app-2/build-scan-oidc-publish` | works |
+| `repository_id` | `1346406320` | works |
+
+In both cases **Assigned project groups** was cleared on the entry, so the claim match is the only
+route to a grant.
 
 Run [32917629791](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32917629791)
 behaves identically to the statically-assigned configuration:
@@ -223,6 +225,36 @@ could plausibly have.
 The practical appeal is that nothing here is repository-specific except the project group's own
 mapping value. One entry scoped to `repository_owner` Equals `develocity-app-2` would serve every
 repository in the org, each landing in whichever project group names it.
+
+### Prefer `repository_id` over `repository`
+
+Both work, and the id form is the safer key. GitHub emits `repository_id` and
+`repository_owner_id` as **strings**, verified from two repositories:
+
+```
+repository       = 'develocity-app-2/build-scan-oidc-publish' (str)
+repository_id    = '1346406320'                               (str)
+```
+
+That matters because Develocity treats numeric claims as absent, so a numeric id could not have
+been matched on at all. Being strings, they can.
+
+Name-based mappings carry a dangling-reference hazard that id-based ones do not. The `repository`
+claim follows a rename, so a renamed repository silently stops matching and its publishes start
+being refused — while the old name becomes available for someone else to create and inherit the
+grant. An id never changes and can never be reclaimed, so both halves of that go away.
+
+The cost is legibility: `1346406320` in the admin UI identifies nothing to a human, so whatever
+creates project groups should write the repository's full name into the group's display name or
+description.
+
+Note this also settles a documentation question. The GitHub section of `workload-identity.adoc`
+says to "scope on the dedicated string claims `repository_owner`, `repository`, `ref`,
+`workflow_ref`, and `job_workflow_ref`", which reads like a whitelist. It is not one:
+`repository_id` is absent from that list and works. The governing rule is the *type* rule stated
+in the same section — string claims match, numeric/boolean/array claims are treated as absent —
+and the doc itself already extends past its own list by adding `ref_type` and `environment` two
+paragraphs later.
 
 **Constraints worth knowing**, none of them in the product docs:
 
