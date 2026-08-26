@@ -21,8 +21,9 @@ Placeholders used throughout:
 | --- | --- |
 | `https://develocity.example.com` | your Develocity server |
 | `«repository_id»` | GitHub's numeric-but-string repository id, e.g. `1234567890` |
-| `«project-id»` | the Develocity project a repository publishes to |
-| `«group-id»` | the Develocity project group containing that project |
+
+Note there is no separate placeholder for the project or project group id: **both are the
+repository id** (§3).
 
 ---
 
@@ -45,9 +46,9 @@ Develocity access token  (short-lived)
   │
   │  3. passed to the build as DEVELOCITY_ACCESS_KEY
   ▼
-Gradle build publishes a Build Scan to «project-id»
+Gradle build publishes a Build Scan to «repository_id»
   │
-  └─ allowed only if the token holds a project group containing «project-id»
+  └─ allowed only if the token holds a project group containing «repository_id»
 ```
 
 Steps 1 and 2 are the CI action's job, not the workflow author's — see §4. The three decisions
@@ -71,7 +72,7 @@ Configure it once, under **Administration → Access control → Workload identi
 | Field | Value | Why |
 | --- | --- | --- |
 | Issuer | `https://token.actions.githubusercontent.com` | GitHub Actions' OIDC issuer. Must match the tokens' `iss` exactly, including the absence of a trailing slash. |
-| Audience | `https://develocity.example.com` | Must equal what the workflow requests. GitHub defaults the audience to the repository owner URL, so pass one explicitly and make these agree. |
+| Audience | `https://develocity.example.com` | Must equal the audience the workload requests. Set it to the server URL, which is what the CI action defaults to, rather than GitHub's default of the repository owner URL. |
 | Claim requirement | `iss` **Equals** `https://token.actions.githubusercontent.com` | At least one requirement is mandatory, and this one matches every GitHub Actions token. Duplicating the Issuer field looks redundant but is what makes the entry match anything at all. See §5.1 — an `aud` requirement does **not** work. |
 | Assigned roles | one minimal, publish-only role | Granted unconditionally to **every repository on GitHub**. See §5.2. |
 | Assigned project groups | *(empty)* | Anything here is granted to every repository. Leave it empty so authorization comes only from the claim. |
@@ -102,15 +103,39 @@ description.
 
 ## 3. What each repository needs
 
-Per repository, three Develocity objects and one relationship:
+Per repository, two Develocity objects and one relationship — all three derived from the
+repository id, so nothing has to be invented or looked up:
 
-1. A **project**, id `«project-id»`. Choose a scheme now: **projects cannot be deleted**, so every
-   registration is permanent, including mistakes and repositories that later disappear.
-2. A **project group**, id `«group-id»`, containing that project and nothing else.
-3. That group's **identity provider mapping** set to the repository's `«repository_id»`.
+| Object | Id | Display name |
+| --- | --- | --- |
+| Project | `«repository_id»` | the repository's full name, e.g. `example-org/example-repo` |
+| Project group | `«repository_id»` | as above |
+
+and the project group's **identity provider mapping** set to `«repository_id»` as well, containing
+that one project and nothing else.
+
+**Use the repository id, not the name, for the identifiers.** The reasoning that makes
+`repository_id` the right claim to match on (§2) applies just as much to the ids of the objects it
+matches against: a repository rename or transfer changes its name but not its id, so nothing drifts
+and nothing has to be renamed in Develocity to keep publishing working. Legibility is recovered by
+the display name, which is the human-readable repository name and can be updated freely — it plays
+no part in matching.
+
+Because every identifier is the same GitHub-issued value, there is nothing to keep in sync: the
+claim in the token, the group's mapping value, and the project the build names are all one number.
+A CI action can derive it from `GITHUB_REPOSITORY_ID` without being told (§4.2).
 
 A group's mapping holds exactly **one** value. Many-to-one is not supported: two claim values
 cannot both map to one group. One-to-many is fine — one value may grant several groups.
+
+Two consequences of keying on the id:
+
+- **Projects cannot be deleted**, so every registration is permanent. A repository deleted and
+  later recreated gets a *new* id and therefore a new project, leaving the old one orphaned. A
+  renamed or transferred repository keeps the same id and the same project.
+- Whether the same value may serve as both a project id and a project group id depends on whether
+  the server namespaces them separately. If it rejects the reuse, suffix the group
+  (`«repository_id»-group`); nothing else in the design changes.
 
 Nothing else changes. The workload identity entry is untouched by onboarding, which is the point.
 
@@ -138,7 +163,7 @@ jobs:
         with:
           develocity-url: https://develocity.example.com
           # no develocity-access-key: the action mints and exchanges an OIDC
-          # token instead, and the audience must match the entry's Audience
+          # token instead, using develocity-url as the audience
 
       - run: ./gradlew build
 ```
@@ -152,7 +177,7 @@ plugins {
 
 develocity {
     server = "https://develocity.example.com"
-    projectId = "«project-id»"          // required; see §5.4
+    projectId = "«repository_id»"       // required; see §5.4
 
     buildScan {
         publishing.onlyIf { true }
@@ -178,9 +203,10 @@ machinery that already exists:
 | Exchange it | `POST /api/auth/token`, bearer = access key | identical, bearer = the OIDC token |
 | Hand it to the build | set `DEVELOCITY_ACCESS_KEY` | unchanged |
 
-What the action needs to add is the first row plus an input for the audience. Everything else —
-the request shape, the retries, masking, and the `«host»=«key»` formatting the Gradle plugin
-demands (§5.3) — it already does.
+What the action needs to add is the first row. The audience needs no input of its own: it should
+default to `develocity-url`, which the action already takes and which the entry's Audience is set
+to. Everything else — the request shape, the retries, masking, and the `«host»=«key»` formatting
+the Gradle plugin demands (§5.3) — it already does.
 
 The rest of this document deliberately describes the exchange in full anyway. Not because a
 workflow author should implement it, but because the failure modes in §5 surface as opaque `401`s
@@ -209,7 +235,8 @@ So a newly connected repository needs **no changes to its build at all**:
     develocity-plugin-version: «latest»
 ```
 
-with the OIDC exchange (§4.1) supplying the credential.
+with the OIDC exchange (§4.1) supplying the credential and the project id derived from the
+repository (below).
 
 **One gap.** Injection has no way to set the project id. There is no `develocity-project-id` input,
 and nothing in the action or its injection scripts handles one. Since a project id is *mandatory*
@@ -217,33 +244,42 @@ once project-level access control is enforced — a build that names no project 
 (§5.4) — injection as it stands cannot connect a repository to a project. Closing that is the one
 enhancement this design depends on.
 
-Whatever form it takes, the plugin already accepts the value three ways, so the injection script
-has options that need no plugin change: the `develocity.projectId` system property, the
-`DEVELOCITY_PROJECT_ID` environment variable, or setting `develocity.projectId` directly in the
-injected configuration.
+It is a small one, because the project id **is** the repository id (§3) and the runner already
+knows it. The action can default the injected project id to `GITHUB_REPOSITORY_ID`, so nothing
+repository-specific has to be passed in, configured, or kept in sync; an explicit input would only
+be needed to override the convention. And the plugin already accepts the value three ways, so no
+plugin change is required either: the `develocity.projectId` system property, the
+`DEVELOCITY_PROJECT_ID` environment variable, or `develocity.projectId` in the injected
+configuration.
 
-Two consequences for the design:
+That is the payoff of deriving every identifier from one GitHub-issued value. A newly connected
+repository needs no build change, no project id in its workflow, and no per-repository action
+input — only `develocity-injection-enabled`, the server URL, and `id-token: write`.
 
-- **Which project a repository belongs to becomes workflow configuration**, not build
-  configuration. That suits automated onboarding: the registrant knows the project id when it
-  creates the project, and can emit it into the workflow rather than into a build file it would
-  otherwise have to modify by pull request.
-- **The build-file route from §4 remains valid** and is the better fit for a repository that
-  already publishes, or one that wants the value under version control alongside its build logic.
-  Both paths end in the same place; injection simply removes the file change from onboarding.
+**The build-file route from §4 remains valid** and is the better fit for a repository that already
+publishes, or one that wants its project id under version control alongside its build logic. Both
+paths end in the same place; injection removes the file change from onboarding.
 
-### 4.3 What stays the workflow author's responsibility
+### 4.3 The one thing that cannot move into the action
 
-Even with the action doing the exchange, three things cannot move into it:
+**`id-token: write`.** This is a platform constraint, not a design choice. `permissions:` is
+declared in workflow or job YAML and determines whether `ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` are injected into the job environment at all. An action runs
+inside the job and has no runtime means of elevating its own job's permissions, and the scope is
+never granted by default — the org-level "read and write permissions" setting governs
+`GITHUB_TOKEN` scopes, not this one. So something outside the action has to declare it.
 
-- **`id-token: write`.** Without it there is no OIDC token to mint, and the job fails before
-  reaching Develocity. It is deliberately not granted by default.
-- **The audience matching the entry.** One shared entry means one audience value. GitHub defaults
-  the audience to the repository owner URL, which will not match a server-URL audience, so the
-  value has to be passed explicitly and has to agree with the entry.
-- **The project id.** The action cannot infer which project a repository belongs to, so the value
-  has to be supplied — in the build, or through injection once that can carry it (§4.2). Without
-  it the publish is refused outright (§5.4).
+That something need not be a person. A registrant generating the workflow file sets `permissions:`
+itself, so in an automated onboarding flow this is one more line it emits rather than a human
+obligation.
+
+Everything else can be defaulted or derived, and should be:
+
+| Value | Where it comes from |
+| --- | --- |
+| Audience | the action defaults it to `develocity-url`; the entry's Audience is the same server URL |
+| Project id | derived from `GITHUB_REPOSITORY_ID`, which is the project id (§3) |
+| Develocity plugin | applied by injection (§4.2) |
 
 ### 4.4 Doing the exchange by hand
 
@@ -374,7 +410,8 @@ must assert on the server's message, and specifically:
 | no project named, and unassociated data disallowed | `rejected the request due to a project ID being required` |
 
 Note the third row is why a project id cannot be optional: a connected repository must name its
-project somewhere, either in its build or via injection (§4.2).
+project, either in its build or via injection (§4.2). Deriving it from the repository id means
+that happens without anyone configuring it.
 
 Asserting merely that *no scan URL appeared* is not enough — that is satisfied by any failure at
 all, including a broken credential, a misconfigured entry, or a compile error. A test written that
@@ -421,11 +458,11 @@ A registrant — typically a GitHub App — automates the per-repository objects
 project groups **do** have a REST API (documented as Beta); workload identity entries do not,
 which is what forces the single shared entry.
 
-On registering a repository, the registrant creates:
+On registering a repository, the registrant creates, all keyed on the repository id (§3):
 
-1. the project `«project-id»`,
-2. the project group `«group-id»` containing it,
-3. the group's identity provider mapping, set to the repository's `«repository_id»`.
+1. the project `«repository_id»`, display name set to the repository's full name,
+2. the project group `«repository_id»` containing it, same display name,
+3. the group's identity provider mapping, set to `«repository_id»`.
 
 Requirements on the registrant:
 
@@ -433,16 +470,18 @@ Requirements on the registrant:
   repository name lets somebody register a repository they do not own. The App already receives
   the repository and its id in its webhook and API payloads, so no name lookup is needed and no
   input needs trusting.
-- **Always write the full, unforgeable identifier** as the mapping value. `«repository_id»` is
-  globally unique and cannot be forged. If you use names instead, use the full `owner/repo` —
-  never a bare repository name, which anybody could create under their own account and match.
+- **Key everything on the repository id.** It is globally unique, unforgeable, and unchanged by
+  renames and transfers. Should you use names instead, use the full `owner/repo` — never a bare
+  repository name, which anybody could create under their own account and match — and accept that
+  a rename then requires updating Develocity.
 - **Record the human-readable name** in the group's display name or description, since the mapping
   value alone is opaque.
-- **Emit the workflow snippet**, including the explicit audience and the project id. A repository
-  that takes GitHub's default audience will not match the entry. Using Develocity injection (§4.2)
-  keeps this to a workflow file and avoids touching the repository's build logic — which matters
-  for onboarding, since a build-file change means opening a pull request against a repository the
-  registrant does not own and waiting for somebody to merge it.
+- **Emit the workflow snippet**, which needs only `id-token: write`, injection enabled and the
+  server URL. The audience defaults to the server URL and the project id derives from the
+  repository id, so neither has to be written in. Using Develocity injection (§4.2) keeps this to a
+  workflow file and avoids touching the repository's build logic — which matters for onboarding,
+  since a build-file change means opening a pull request against a repository the registrant does
+  not own and waiting for somebody to merge it.
 - **Treat the registrant's own Develocity credential as the most sensitive thing in the system.**
   Creating projects requires the *Configure projects* permission, so the registrant holds a
   long-lived administrative key — somewhat against the spirit of removing long-lived keys from CI.
