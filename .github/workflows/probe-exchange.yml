@@ -69,6 +69,38 @@ jobs:
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
           echo "::add-mask::$oidc"
 
+          # Full structure of what GitHub actually sends. The decoded header and
+          # payload are not secrets -- they describe the repository and the run,
+          # and cannot authenticate anything without the signature, which is not
+          # printed. JSON types are shown because Develocity's claim matcher
+          # treats non-string claims as absent.
+          echo "== token structure as received from GitHub =="
+          python3 - "$oidc" <<'PY'
+          import base64, json, sys
+
+          def seg(s):
+              s += "=" * (-len(s) % 4)
+              return json.loads(base64.urlsafe_b64decode(s))
+
+          head, payload, _ = sys.argv[1].split(".")
+
+          print("--- JOSE header ---")
+          print(json.dumps(seg(head), indent=2, sort_keys=True))
+
+          claims = seg(payload)
+          print(f"--- payload: {len(claims)} claims ---")
+          print(json.dumps(claims, indent=2, sort_keys=True))
+
+          print("--- claim types ---")
+          for k in sorted(claims):
+              v = claims[k]
+              t = type(v).__name__
+              note = ""
+              if isinstance(v, list):
+                  note = "  <-- ARRAY: Develocity treats array claims as absent"
+              print(f"  {k:24} {t}{note}")
+          PY
+
           echo "== OIDC token =="
           exchange "oidc" "$oidc"
 
