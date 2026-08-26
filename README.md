@@ -15,6 +15,7 @@ project-level access control and workload identity support).
 | OIDC token exchange | **working**: `POST /api/auth/token` returns a Develocity token |
 | OIDC end to end | **working**: all six cells pass, OIDC matching the access key exactly |
 | Dynamic project group allocation | **working**: verified on both the `repository` and `repository_id` claims |
+| One all-repositories entry | **working**: two repositories confined to their own projects by `repository_id` alone |
 
 `build.yml` runs both credentials side by side, so the comparison is one run
 ([32916347289](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32916347289)):
@@ -225,6 +226,65 @@ could plausibly have.
 The practical appeal is that nothing here is repository-specific except the project group's own
 mapping value. One entry scoped to `repository_owner` Equals `develocity-app-2` would serve every
 repository in the org, each landing in whichever project group names it.
+
+### A single all-repositories entry
+
+The end state for a self-service model: **one** workload identity entry that any repository may
+authenticate against, with the project it can reach decided entirely by its `repository_id`. No
+per-repository entry configuration, because entries have no API and cannot be created on demand.
+
+| Field | Value |
+| --- | --- |
+| Claim requirement | `repository` **Contains** `/` |
+| Assigned project groups | *(cleared)* |
+| Project groups claim | `repository_id` |
+| Assigned roles | `Student` |
+
+Then one project group per repository, its identity provider mapping set to that repository's id.
+
+Verified across two repositories, in
+[32977842282](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32977842282)
+and the mirror in
+[demo-app](https://github.com/develocity-app-2/demo-app/actions/runs/32977846223):
+
+| Runs in | `repository_id` | `projectId` | Result |
+| --- | --- | --- | --- |
+| `build-scan-oidc-publish` | 1346406320 | `build-scan-oidc-publish` | publishes |
+| `build-scan-oidc-publish` | 1346406320 | `github-app-demo-app` | denied |
+| `demo-app` | 1335548142 | `github-app-demo-app` | publishes |
+| `demo-app` | 1335548142 | `build-scan-oidc-publish` | denied |
+
+Each repository reaches its own project and is denied the other's, from a single shared entry that
+names neither of them. The cross-check matters more than either direction alone: one repository
+publishing successfully proves the dynamic grant fires, and the *other* repository being denied
+the same project proves the grant is scoped rather than shared.
+
+#### `aud` cannot be used as the claim requirement
+
+The docs suggest exactly this for an entry with no other criteria:
+
+> If you truly need to accept tokens with no other claim criteria, you can add a requirement for
+> the issuer or audience claim.
+
+**That does not work.** With the sole requirement `aud` Equals
+`https://dv-self-paced-training.grdev.net`, and tokens carrying
+`aud = 'https://dv-self-paced-training.grdev.net' (str)`, the exchange returns 401 for every
+repository — including the one that had published minutes earlier under a `repository` Equals
+requirement. Nothing else changed.
+
+Two readings, indistinguishable from outside: `iss` and `aud` are validated by their own dedicated
+fields and excluded from the claim-requirement matcher — the docs do call requirements *"one or
+more **additional** claims"*, which hints at it — or it is a defect. Either way the advice above
+is wrong as written. Only `aud` was tested; `iss` may behave the same.
+
+`repository` **Contains** `/` is the working equivalent: every `owner/repo` value contains a
+slash, the requirements list stays non-empty, and it uses a claim the matcher demonstrably reads.
+`repository` **Regular Expression** `.+` should serve equally.
+
+Note the failure mode of getting this wrong is total, not partial. An empty requirements list, a
+mistyped value, and an `aud` requirement all produce the same thing: a 401 for every repository at
+once. That is the safe direction — it never silently over-grants — but it is indistinguishable
+from a rejected token, so a scheduled run of this matrix is worth more than it looks.
 
 ### Prefer `repository_id` over `repository`
 
