@@ -11,13 +11,19 @@ project-level access control and workload identity support).
 
 | | |
 | --- | --- |
-| Project-level access control | **verified**, in all three directions — but under *access-key* authentication |
+| Project-level access control | **verified**, in all three directions — under *access-key* authentication |
 | OIDC token exchange | **blocked**: `POST /api/auth/token` returns HTTP 401 for a GitHub OIDC token |
 | Workflow side of OIDC | done; token is minted with correct claims and presented correctly |
 
-Because the exchange fails, every job in `build.yml` currently fails at its first step. The
-access-control result below was established before the switch to OIDC and has not yet been
-re-confirmed under it.
+`build.yml` runs both credentials side by side, so the contrast is visible in a single run:
+
+| | `granted` | `forbidden` | `no-project-id` |
+| --- | --- | --- | --- |
+| **access-key** | publishes | denied | refused, project required |
+| **oidc** | 401 at exchange | 401 at exchange | 401 at exchange |
+
+The access-key column is the control: it shows the server, the projects, the grants and the three
+builds are all working, and isolates the failure to the OIDC credential.
 
 ## Open problem: the OIDC exchange is rejected
 
@@ -111,8 +117,15 @@ Three independent Gradle builds, byte-for-byte identical except for the `project
 | `projects/forbidden` | `build-scan-oidc-forbidden` | publish denied |
 | `projects/no-project-id` | *(none)* | publish refused — a project is required |
 
-`.github/workflows/build.yml` runs each as a separate job. The negative cases are the point: a
-credential that can publish anywhere is not meaningfully scoped.
+The negative cases are the point: a credential that can publish anywhere is not meaningfully
+scoped.
+
+`.github/workflows/build.yml` runs each of those under each credential — a six-cell matrix of
+`credential × project`. Both arms share one job definition, so they run on the same commit and
+the same runner generation. That matters more than it sounds: runs minutes apart have already
+landed on different runner images carrying different Gradle versions, and a comparison split
+across two workflows would carry that variable. Each project's expected outcome travels with it
+through `matrix.include`.
 
 ### Why the assertions match on the message
 
@@ -134,18 +147,19 @@ for an unaccounted reason.
 
 ## Result: project-level access control
 
-Verified under access-key authentication, run
-[32885817215](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32885817215):
+Verified under access-key authentication, most recently in run
+[32914559098](https://github.com/develocity-app-2/build-scan-oidc-publish/actions/runs/32914559098):
 
 | Build | Server response | |
 | --- | --- | --- |
-| `granted` | published — `/s/vlm4gqyo3f4ds` | PASS |
+| `granted` | published — `/s/k64nwe5eayei6` | PASS |
 | `forbidden` | `denied the request to publish the build scan (used access key prefix '…')` | PASS |
 | `no-project-id` | `rejected the request due to a project ID being required` | PASS |
 
 Access control holds in all three directions: the granted project publishes, the ungranted one is
-denied, and a build naming no project is refused outright. Re-confirming this under OIDC is
-blocked on the exchange above; nothing in the three builds needs to change for it.
+denied, and a build naming no project is refused outright. Re-confirming this **under OIDC** is
+blocked on the exchange above; nothing in the three builds needs to change for it, and the
+matrix will show it the moment the exchange succeeds.
 
 ## How authentication works
 
@@ -228,5 +242,9 @@ preinstalled Gradle. Publishing is refused until the machine has an access key f
 `DEVELOCITY_ACCESS_KEY` accepts the `«host»=«key»` form, which build tools parse to avoid sending
 a key to the wrong server. The REST API does not: `Authorization: Bearer` takes the bare key, and
 the host-qualified form is rejected as one malformed token with a 401 indistinguishable from the
-OIDC failure above. `probe-exchange.yml` strips the prefix for this reason. The build jobs are
-unaffected, as they hand the value to the Gradle plugin, which understands both forms.
+OIDC failure above — which briefly made the exchange endpoint look broken for both credentials.
+`probe-exchange.yml` strips the prefix for this reason. The matrix's access-key arm does not,
+because it hands the value to the Gradle plugin, which understands both forms.
+
+Note that the secret is therefore required for the access-key half of the comparison; deleting it
+turns that column red rather than merely skipping it.
