@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  # Lets each job mint an OIDC token describing itself. Without this the
+  # Lets the OIDC cells mint a token describing the job. Without this the
   # exchange has nothing to present to Develocity.
   id-token: write
 
@@ -15,107 +15,102 @@ env:
   DEVELOCITY_URL: https://dv-self-paced-training.grdev.net
 
 jobs:
-  granted:
-    name: granted project (expect publish to SUCCEED)
+  # Six cells: each project published under each credential. Both credentials
+  # run in the same job definition, on the same commit and the same runner
+  # generation, so a difference between them is attributable to the credential
+  # and not to anything about when or where the run happened.
+  publish:
+    name: ${{ matrix.credential }} / ${{ matrix.project }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        credential: [access-key, oidc]
+        project: [granted, forbidden, no-project-id]
+        include:
+          - project: granted
+            expect: published
+          - project: forbidden
+            expect: denied
+          - project: no-project-id
+            expect: project-required
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/develocity-token
+      - name: Authenticate by exchanging an OIDC token
+        if: matrix.credential == 'oidc'
+        uses: ./.github/actions/develocity-token
         with:
           server-url: ${{ env.DEVELOCITY_URL }}
           audience: ${{ env.DEVELOCITY_URL }}
+
+      # The stored key may be in "host=key" form; the Gradle plugin parses both,
+      # so it is passed through untouched. Only the REST API needs the bare key.
+      - name: Authenticate with the stored access key
+        if: matrix.credential == 'access-key'
+        env:
+          KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+        run: |
+          if [ -z "${KEY:-}" ]; then
+            echo "DEVELOCITY_ACCESS_KEY secret is not set, so the access-key"
+            echo "arm of the comparison cannot run."
+            exit 1
+          fi
+          echo "DEVELOCITY_ACCESS_KEY=$KEY" >> "$GITHUB_ENV"
 
       # No wrapper and no setup-gradle/setup-java: the runner image already has
       # Gradle and JDK 21, so the job downloads no toolchain and the build's own
       # configuration is the only Develocity config in play.
-      - name: Build and assert a scan was published
-        working-directory: projects/granted
+      - name: Build and assert the outcome
+        working-directory: projects/${{ matrix.project }}
         run: |
           export JAVA_HOME="$JAVA_HOME_21_X64"
           set +e
           gradle build --console=plain 2>&1 | tee build.log
           echo "::notice::gradle exited with ${PIPESTATUS[0]}"
           set -e
-          if grep -q 'project ID should be' build.log; then
-            echo "FAIL: the plugin rejected the project ID before publishing."
-            echo "      This is a configuration problem, not an access decision."
-            exit 1
-          fi
-          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
-            echo "PASS: a Build Scan was published to the granted project."
-          else
-            echo "FAIL: expected a published Build Scan, but no scan URL was emitted."
-            exit 1
-          fi
 
-  forbidden:
-    name: forbidden project (expect publish to BE REJECTED)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
+          # A refused publish does not fail the Gradle build, so the exit code
+          # carries no signal. Match the server's specific response instead:
+          # requiring the denial text, rather than merely the absence of a scan
+          # URL, is what stops an unrelated failure from passing as proof of
+          # isolation.
+          published=false
+          grep -qE 'grdev\.net/s/[a-z0-9]+' build.log && published=true
 
-      - uses: ./.github/actions/develocity-token
-        with:
-          server-url: ${{ env.DEVELOCITY_URL }}
-          audience: ${{ env.DEVELOCITY_URL }}
-
-      - name: Build and assert the publish was rejected
-        working-directory: projects/forbidden
-        run: |
-          export JAVA_HOME="$JAVA_HOME_21_X64"
-          set +e
-          gradle build --console=plain 2>&1 | tee build.log
-          echo "::notice::gradle exited with ${PIPESTATUS[0]}"
-          set -e
-          # A rejected publish does not fail the Gradle build, so the exit code
-          # carries no signal. Assert on what the plugin printed instead. Requiring
-          # the denial message, rather than merely the absence of a scan URL, is
-          # what stops an unrelated failure from passing as proof of isolation.
-          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
-            echo "FAIL: a Build Scan was published to a project this credential"
-            echo "      should have no access to. Access control is not holding."
-            exit 1
-          fi
-          if grep -q 'denied the request to publish the build scan' build.log; then
-            echo "PASS: the server denied the publish for want of project access."
-          else
-            echo "INCONCLUSIVE: nothing was published, but the server did not say it"
-            echo "      denied the request, so the reason is unaccounted for."
-            exit 1
-          fi
-
-  no-project-id:
-    name: no project ID (expect publish to BE REJECTED)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: ./.github/actions/develocity-token
-        with:
-          server-url: ${{ env.DEVELOCITY_URL }}
-          audience: ${{ env.DEVELOCITY_URL }}
-
-      # With project-level access control enforcing and unassociated data
-      # disallowed, a build that names no project is refused outright. This is the
-      # third leg of the access-control story, not a control any more.
-      - name: Build and assert the publish was rejected
-        working-directory: projects/no-project-id
-        run: |
-          export JAVA_HOME="$JAVA_HOME_21_X64"
-          set +e
-          gradle build --console=plain 2>&1 | tee build.log
-          echo "::notice::gradle exited with ${PIPESTATUS[0]}"
-          set -e
-          if grep -qE 'grdev\.net/s/[a-z0-9]+' build.log; then
-            echo "FAIL: a Build Scan published without naming any project, so"
-            echo "      unassociated data is still being accepted."
-            exit 1
-          fi
-          if grep -q 'due to a project ID being required' build.log; then
-            echo "PASS: the server refused a build that names no project."
-          else
-            echo "INCONCLUSIVE: nothing was published, but not because a project ID"
-            echo "      was required, so the reason is unaccounted for."
-            exit 1
-          fi
+          case "${{ matrix.expect }}" in
+            published)
+              if $published; then
+                echo "PASS: a Build Scan was published to the granted project."
+              else
+                echo "FAIL: expected a published Build Scan, none was emitted."
+                exit 1
+              fi
+              ;;
+            denied)
+              if $published; then
+                echo "FAIL: published to a project this credential should have no"
+                echo "      access to. Access control is not holding."
+                exit 1
+              elif grep -q 'denied the request to publish the build scan' build.log; then
+                echo "PASS: the server denied the publish for want of project access."
+              else
+                echo "INCONCLUSIVE: nothing published, but the server did not say it"
+                echo "      denied the request, so the reason is unaccounted for."
+                exit 1
+              fi
+              ;;
+            project-required)
+              if $published; then
+                echo "FAIL: published without naming any project, so unassociated"
+                echo "      data is still being accepted."
+                exit 1
+              elif grep -q 'due to a project ID being required' build.log; then
+                echo "PASS: the server refused a build that names no project."
+              else
+                echo "INCONCLUSIVE: nothing published, but not because a project ID"
+                echo "      was required, so the reason is unaccounted for."
+                exit 1
+              fi
+              ;;
+          esac
