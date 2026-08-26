@@ -1,2 +1,5 @@
 .gradle/
 build/
+
+# Local toolchain pins (asdf); not part of the experiment.
+.tool-versions
