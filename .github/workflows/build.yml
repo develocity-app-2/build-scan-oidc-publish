@@ -67,8 +67,16 @@ jobs:
           export JAVA_HOME="$JAVA_HOME_21_X64"
           set +e
           gradle build --console=plain 2>&1 | tee build.log
-          echo "::notice::gradle exited with ${PIPESTATUS[0]}"
+          status=${PIPESTATUS[0]}
           set -e
+          # Logged, not raised as an annotation: a refused publish still exits 0,
+          # so this number says nothing about the outcome under test and reads as
+          # a verdict when it is surfaced next to one.
+          echo "gradle exited with $status"
+
+          # One line per cell on the run summary, so the six outcomes can be read
+          # side by side without opening each job.
+          verdict() { echo "- **${{ matrix.credential }} / ${{ matrix.project }}** — $1" >> "$GITHUB_STEP_SUMMARY"; }
 
           # A refused publish does not fail the Gradle build, so the exit code
           # carries no signal. Match the server's specific response instead:
@@ -82,8 +90,10 @@ jobs:
             published)
               if $published; then
                 echo "PASS: a Build Scan was published to the granted project."
+                verdict "PASS — published $(grep -oE 'https://[^ ]*/s/[a-z0-9]+' build.log | head -1)"
               else
                 echo "FAIL: expected a published Build Scan, none was emitted."
+                verdict "FAIL — expected a published scan, none was emitted"
                 exit 1
               fi
               ;;
@@ -91,12 +101,15 @@ jobs:
               if $published; then
                 echo "FAIL: published to a project this credential should have no"
                 echo "      access to. Access control is not holding."
+                verdict "FAIL — published to a project it has no access to"
                 exit 1
               elif grep -q 'denied the request to publish the build scan' build.log; then
                 echo "PASS: the server denied the publish for want of project access."
+                verdict "PASS — server denied the publish"
               else
                 echo "INCONCLUSIVE: nothing published, but the server did not say it"
                 echo "      denied the request, so the reason is unaccounted for."
+                verdict "INCONCLUSIVE — nothing published, reason unaccounted for"
                 exit 1
               fi
               ;;
@@ -104,12 +117,15 @@ jobs:
               if $published; then
                 echo "FAIL: published without naming any project, so unassociated"
                 echo "      data is still being accepted."
+                verdict "FAIL — published without naming a project"
                 exit 1
               elif grep -q 'due to a project ID being required' build.log; then
                 echo "PASS: the server refused a build that names no project."
+                verdict "PASS — server refused a build naming no project"
               else
                 echo "INCONCLUSIVE: nothing published, but not because a project ID"
                 echo "      was required, so the reason is unaccounted for."
+                verdict "INCONCLUSIVE — nothing published, reason unaccounted for"
                 exit 1
               fi
               ;;

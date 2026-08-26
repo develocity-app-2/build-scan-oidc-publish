@@ -70,6 +70,10 @@ runs:
           --data '')
         dv=$(cat /tmp/dv-token.out)
         if [ "$code" != "200" ]; then
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "- **OIDC exchange** — FAILED, HTTP $code from \`/api/auth/token\`" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "Exchange failed with HTTP $code. Develocity returned:"
           echo "  $dv"
           echo
