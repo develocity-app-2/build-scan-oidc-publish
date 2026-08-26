@@ -64,7 +64,7 @@ Configure it once, under **Administration → Access control → Workload identi
 | --- | --- | --- |
 | Issuer | `https://token.actions.githubusercontent.com` | GitHub Actions' OIDC issuer. Must match the tokens' `iss` exactly, including the absence of a trailing slash. |
 | Audience | `https://develocity.example.com` | Must equal what the workflow requests. GitHub defaults the audience to the repository owner URL, so pass one explicitly and make these agree. |
-| Claim requirement | `repository` **Contains** `/` | Matches every repository while keeping the requirements list non-empty. See §5.1 — the obvious alternatives do not work. |
+| Claim requirement | `iss` **Equals** `https://token.actions.githubusercontent.com` | At least one requirement is mandatory, and this one matches every GitHub Actions token. Duplicating the Issuer field looks redundant but is what makes the entry match anything at all. See §5.1 — an `aud` requirement does **not** work. |
 | Assigned roles | one minimal, publish-only role | Granted unconditionally to **every repository on GitHub**. See §5.2. |
 | Assigned project groups | *(empty)* | Anything here is granted to every repository. Leave it empty so authorization comes only from the claim. |
 | Project groups claim | `repository_id` | Develocity reads this claim and grants every project group whose identity provider mapping equals its value. |
@@ -182,27 +182,42 @@ Notes:
 
 Each of these cost real time, and several are indistinguishable from one another from the outside.
 
-### 5.1 `aud` and `iss` do not work as claim requirements
+### 5.1 `iss` works as a match-all requirement; `aud` does not
 
 An entry needs at least one claim requirement — **an entry with no claim requirements matches no
-token at all**. Develocity's own documentation suggests that if you need to accept tokens with no
-other criteria, you add a requirement on the issuer or audience claim.
+token at all**. For an entry meant to accept every repository, the requirement therefore has to be
+something every token already satisfies.
 
-**That does not work.** With a sole requirement of `aud` **Equals** `https://develocity.example.com`,
-against tokens carrying exactly that string value for `aud`, every exchange returns `HTTP 401` —
-including from a repository that had been publishing successfully moments earlier under a
-`repository` requirement. Only `aud` was tested; `iss` may behave the same.
+Develocity's documentation suggests a requirement on the issuer or audience claim for exactly this
+case. That advice is **half right**:
 
-Use a requirement on a claim the matcher demonstrably reads, with a pattern that matches
-everything:
+| Sole claim requirement | Result |
+| --- | --- |
+| `iss` **Equals** `https://token.actions.githubusercontent.com` | works — matches every GitHub Actions token |
+| `aud` **Equals** `https://develocity.example.com` | **`HTTP 401` for every repository** |
 
-- `repository` **Contains** `/` — every `owner/repo` value contains a slash.
-- `repository` **Regular Expression** `.+` — equivalent.
+The `aud` failure is not a configuration mistake. The tokens carried exactly that string as their
+`aud`, the entry's own Audience field held the same value, and a repository that had been
+publishing successfully moments earlier under a `repository` requirement began failing the instant
+the requirement changed to `aud`. Nothing else differed.
+
+Since `iss` works and both claims have their own dedicated field on the entry, the failure is
+specific to `aud` rather than a general exclusion of standard claims. The likeliest explanation is
+typing: a JWT's `aud` is permitted to be either a string or an array of strings, and JWT libraries
+routinely expose it as a collection. Develocity's matcher treats array claims as absent, so an
+`aud` requirement would fail even against a token whose `aud` is a lone string. That is a
+hypothesis, not a confirmed root cause, but it fits every observation.
+
+Workable match-all requirements, in preference order:
+
+1. `iss` **Equals** the issuer URL — documented, states its intent plainly, and confirmed working.
+2. `repository` **Contains** `/` — every `owner/repo` value contains a slash.
+3. `repository` **Regular Expression** `.+` — equivalent to the above.
 
 Related: the documentation lists "the dedicated string claims `repository_owner`, `repository`,
 `ref`, `workflow_ref`, `job_workflow_ref`", which reads like an allowlist. It is not one —
-`repository_id` is absent from that list and works. The real constraint is the claim's JSON type:
-strings match; numeric, boolean and array claims are treated as absent.
+`repository_id` is absent from that list and works, as does `iss`. The real constraint is the
+claim's JSON type: strings match; numeric, boolean and array claims are treated as absent.
 
 ### 5.2 The fixed role is granted to every repository on GitHub
 

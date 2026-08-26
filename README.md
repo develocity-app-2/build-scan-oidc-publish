@@ -236,7 +236,7 @@ per-repository entry configuration, because entries have no API and cannot be cr
 
 | Field | Value |
 | --- | --- |
-| Claim requirement | `repository` **Contains** `/` |
+| Claim requirement | `repository` **Contains** `/` (or `iss` **Equals** the issuer URL) |
 | Assigned project groups | *(cleared)* |
 | Project groups claim | `repository_id` |
 | Assigned roles | `Student` |
@@ -291,32 +291,32 @@ repository on GitHub. Any non-project-scoped permission in it — API data acces
 therefore has to be audited as a security boundary in its own right; no publishing test can do it
 for you.
 
-#### `aud` cannot be used as the claim requirement
+#### `iss` works as the match-all requirement; `aud` does not
 
-The docs suggest exactly this for an entry with no other criteria:
+An entry needs at least one claim requirement, so an all-repositories entry needs one that every
+token already satisfies. The docs suggest the issuer or audience claim for exactly this case, and
+that advice turns out to be half right:
 
-> If you truly need to accept tokens with no other claim criteria, you can add a requirement for
-> the issuer or audience claim.
+| Sole claim requirement | Result |
+| --- | --- |
+| `iss` Equals `https://token.actions.githubusercontent.com` | works |
+| `repository` Contains `/` | works — used for the runs above |
+| `aud` Equals `https://dv-self-paced-training.grdev.net` | **401 for every repository** |
 
-**That does not work.** With the sole requirement `aud` Equals
-`https://dv-self-paced-training.grdev.net`, and tokens carrying
-`aud = 'https://dv-self-paced-training.grdev.net' (str)`, the exchange returns 401 for every
-repository — including the one that had published minutes earlier under a `repository` Equals
-requirement. Nothing else changed.
+The `aud` failure was not a typo. Tokens carried exactly that string as `aud`, the entry's Audience
+field held the same value, and the repository that had published minutes earlier under a
+`repository` Equals requirement began failing the moment the requirement became `aud`. Nothing else
+changed.
 
-Two readings, indistinguishable from outside: `iss` and `aud` are validated by their own dedicated
-fields and excluded from the claim-requirement matcher — the docs do call requirements *"one or
-more **additional** claims"*, which hints at it — or it is a defect. Either way the advice above
-is wrong as written. Only `aud` was tested; `iss` may behave the same.
+`iss` working rules out the theory that claims with their own dedicated entry field are excluded
+from the matcher — `iss` has one too. The likeliest remaining explanation is typing: a JWT's `aud`
+may be a string *or* an array, JWT libraries commonly expose it as a collection, and Develocity
+treats array claims as absent. That would make an `aud` requirement fail even when the token's
+`aud` is a single string. Hypothesis, not confirmed.
 
-`repository` **Contains** `/` is the working equivalent: every `owner/repo` value contains a
-slash, the requirements list stays non-empty, and it uses a claim the matcher demonstrably reads.
-`repository` **Regular Expression** `.+` should serve equally.
-
-Note the failure mode of getting this wrong is total, not partial. An empty requirements list, a
-mistyped value, and an `aud` requirement all produce the same thing: a 401 for every repository at
-once. That is the safe direction — it never silently over-grants — but it is indistinguishable
-from a rejected token, so a scheduled run of this matrix is worth more than it looks.
+The cross-check runs above used `repository` Contains `/`. `iss` Equals was confirmed separately
+and is the better choice for a production entry: it is the documented approach and states its
+intent plainly, where `repository` Contains `/` relies on an incidental property of the value.
 
 ### Prefer `repository_id` over `repository`
 
