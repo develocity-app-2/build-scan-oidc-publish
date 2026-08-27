@@ -1,0 +1,17 @@
+name: Develocity connect demo
+
+# A fixture for demonstrating the Develocity GitHub App's connect flow, and
+# nothing else. It deliberately lacks both `id-token: write` and a
+# `develocity-url` input on the setup-gradle step: that is the "needs connecting"
+# state the app detects and opens a pull request to fix.
+#
+# `workflow_dispatch` only, so adding it never triggers a run on its own.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: develocity-app-2/setup-gradle@main
