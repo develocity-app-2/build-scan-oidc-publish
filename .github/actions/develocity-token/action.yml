@@ -86,10 +86,9 @@ runs:
           echo "the claims above against the workload identity entry's Issuer,"
           echo "Audience and claim requirements."
           echo
-          echo "Note this is currently a known, unresolved failure on this server"
-          echo "even with an entry that matches exactly -- see the README's"
-          echo "'Open problem' section, and probe-exchange.yml to reproduce it"
-          echo "alongside an access key, which succeeds against this endpoint."
+          echo "probe-exchange.yml reproduces this in isolation, alongside an"
+          echo "access key, which lets you tell a rejected OIDC token apart from"
+          echo "an endpoint that is refusing everything."
           exit 1
         fi
         echo "::add-mask::$dv"
