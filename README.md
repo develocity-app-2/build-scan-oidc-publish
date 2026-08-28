@@ -8,7 +8,7 @@ Four Gradle builds under `projects/`, identical but for their `projectId`, run u
 credentials as an eight-cell matrix. All eight cells pass.
 
 **The design of record is
-[`docs/design/oidc-build-scan-publishing.md`](../docs/design/oidc-build-scan-publishing.md)** —
+[`docs/design/oidc-build-scan-publishing.md`](https://github.com/develocity-app-2/docs/blob/main/design/oidc-build-scan-publishing.md)** —
 written portably, so it can be applied to a new deployment. §8 covers this harness and its
 results; §5.3 covers the access-key format trap that bites both ends of the exchange.
 
